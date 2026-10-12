@@ -66,6 +66,12 @@ public interface IAudioEngine
 
     Task<IReadOnlyList<AudioProcessInfo>> ListAudioProcessesAsync();
 
+    IReadOnlyList<EffectInfo> Effects { get; }
+
+    string EffectFolder { get; }
+
+    bool IsMonitoring { get; }
+
     /// <summary>音效库：文件名去掉扩展名就是音效名。</summary>
     Task ScanEffectsAsync(string? folder);
 

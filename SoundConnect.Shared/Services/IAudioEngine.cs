@@ -26,6 +26,7 @@ public sealed class AudioEngineSnapshot
     public bool IsClipping { get; init; }
     public long MusicUnderruns { get; init; }
     public long MicrophoneUnderruns { get; init; }
+    public double AutoGainDb { get; init; }
     public double MusicGain { get; init; }
     public double MicrophoneGain { get; init; }
     public IReadOnlyList<string> Log { get; init; } = Array.Empty<string>();
@@ -39,6 +40,9 @@ public interface IAudioEngine
     event Action? Changed;
 
     bool IsRunning { get; }
+
+    /// <summary>麦克风自动增益：把说话电平自动拉到合适响度，省得每次靠手调。</summary>
+    bool AutoGainEnabled { get; set; }
 
     AudioEngineSnapshot Snapshot { get; }
 

@@ -27,6 +27,14 @@ public sealed class AudioEngine : IAudioEngine
     private const int MicrophoneLatencyMs = 10;
     /// <summary>源缓冲涨到这个深度就说明两边时钟漂了，直接跳到最新数据，避免延迟越积越大。</summary>
     private const int MaxSourceBufferedMs = 150;
+    /// <summary>噪声门：麦克风原始电平低于这个值就当底噪，直接送静音，别让大增益把它一起放大（约 -55dB）。</summary>
+    private const double MicrophoneGateRms = 0.0018;
+    /// <summary>门打开后的保持时间，避免说话换气的间隙被切掉。</summary>
+    private const int MicrophoneGateHoldMs = 250;
+    /// <summary>自动增益的目标：说话时送到虚拟线里的 RMS（约 -26dB）。</summary>
+    private const double MicrophoneTargetRms = 0.05;
+    private const double AutoGainMin = 1.0;
+    private const double AutoGainMax = 30.0;
 
     private readonly object sync = new();
     private readonly List<string> log = new();
@@ -46,6 +54,11 @@ public sealed class AudioEngine : IAudioEngine
 
     private double musicGain = 1.0;
     private double microphoneGain = 1.0;
+    private double autoGain = 1.0;
+    private double speechSumSquares;
+    private long speechSamples;
+    private byte[] gateSilence = [];
+    private DateTime gateOpenUntil = DateTime.MinValue;
     private double musicLevel;
     private double microphoneLevel;
     private double outputLevel;
@@ -62,6 +75,11 @@ public sealed class AudioEngine : IAudioEngine
     public event Action? Changed;
 
     public bool IsRunning { get; private set; }
+
+    public bool AutoGainEnabled { get; set; } = true;
+
+    /// <summary>手动增益乘上自动增益，就是最终送给队友的麦克风倍数。</summary>
+    private double EffectiveMicrophoneGain => microphoneGain * (AutoGainEnabled ? autoGain : 1);
 
     public IReadOnlyList<AudioDeviceInfo> RenderDevices { get; private set; } = [];
 
@@ -82,6 +100,7 @@ public sealed class AudioEngine : IAudioEngine
         IsClipping = clipping,
         MusicUnderruns = musicUnderruns,
         MicrophoneUnderruns = microphoneUnderruns,
+        AutoGainDb = AutoGainEnabled ? 20 * Math.Log10(Math.Max(autoGain, 0.0001)) : 0,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
         Log = log.ToArray()
@@ -274,7 +293,7 @@ public sealed class AudioEngine : IAudioEngine
 
     public void SetGain(string channel, double volume)
     {
-        var clamped = Math.Clamp(volume, 0, 10); // 上限 10x，也就是 +20dB
+        var clamped = Math.Clamp(volume, 0, 100); // 上限 100x，也就是 +40dB
         if (channel == "music")
         {
             musicGain = clamped;
@@ -300,10 +319,36 @@ public sealed class AudioEngine : IAudioEngine
 
     private void OnMicrophoneData(object? sender, WaveInEventArgs eventArgs)
     {
-        microphoneLevel =
-            Level(eventArgs.Buffer, microphoneBuffer?.WaveFormat, eventArgs.BytesRecorded)
-            * microphoneGain;
-        Push(microphoneBuffer, eventArgs.Buffer, eventArgs.BytesRecorded, "麦克风");
+        var buffer = microphoneBuffer;
+        if (buffer is null) return;
+
+        var level = Level(eventArgs.Buffer, buffer.WaveFormat, eventArgs.BytesRecorded);
+        microphoneLevel = level * EffectiveMicrophoneGain;
+
+        if (level >= MicrophoneGateRms)
+        {
+            // 只统计说话那部分，静音段不参与，否则自动增益会把"会说"当成"很轻"
+            var samples = eventArgs.BytesRecorded / 4;
+            speechSumSquares += level * level * samples;
+            speechSamples += samples;
+        }
+
+        if (level >= MicrophoneGateRms)
+        {
+            gateOpenUntil = DateTime.UtcNow.AddMilliseconds(MicrophoneGateHoldMs);
+        }
+        if (DateTime.UtcNow >= gateOpenUntil)
+        {
+            // 底噪，门关着：送等长静音，别把噪声放大以后塞给队友
+            if (gateSilence.Length < eventArgs.BytesRecorded)
+            {
+                gateSilence = new byte[eventArgs.BytesRecorded];
+            }
+            Push(buffer, gateSilence, eventArgs.BytesRecorded, "麦克风");
+            return;
+        }
+
+        Push(buffer, eventArgs.Buffer, eventArgs.BytesRecorded, "麦克风");
     }
 
     private void Push(BufferedWaveProvider? buffer, byte[] data, int count, string name)
@@ -342,7 +387,31 @@ public sealed class AudioEngine : IAudioEngine
         {
             lastMeterAt = DateTime.UtcNow;
             ReportUnderruns();
+            UpdateAutoGain();
             RaiseChanged();
+        }
+    }
+
+    /// <summary>每秒按说话电平调一次自动增益，每次最多动 6dB，避免抽气感。</summary>
+    private void UpdateAutoGain()
+    {
+        if (speechSamples <= 0) return;
+
+        var speechRms = Math.Sqrt(speechSumSquares / speechSamples);
+        speechSumSquares = 0;
+        speechSamples = 0;
+        if (!AutoGainEnabled || !IsRunning) return;
+
+        var desired = Math.Clamp(
+            MicrophoneTargetRms / Math.Max(speechRms, 1e-5),
+            AutoGainMin,
+            AutoGainMax
+        );
+        var limited = Math.Clamp(desired, autoGain / 2, autoGain * 2);
+        autoGain = Math.Clamp(limited, AutoGainMin, AutoGainMax);
+        if (microphoneVolume is not null)
+        {
+            microphoneVolume.Volume = (float)EffectiveMicrophoneGain;
         }
     }
 

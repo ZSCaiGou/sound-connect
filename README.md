@@ -41,6 +41,7 @@ dotnet run --project SoundConnect -- --selftest   # 无界面自检：跑一遍�
 # 虚拟线自检
 dotnet run --project tools/audio-probe -- list
 dotnet run --project tools/audio-probe -- probe --render "名称" --capture "名称"
+dotnet run --project tools/audio-probe -- mic --device "麦克风名称"   # 麦克风自检：系统音量 + 原始电平
 
 # 把某个进程的声音抓出来送进虚拟线（QQ 音乐正在放歌时可以用）
 dotnet run --project tools/process-capture -- list

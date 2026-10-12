@@ -94,13 +94,17 @@
             </div>
             <div class="col-md-6">
                 <label class="form-label">麦克风音量 @microphoneGainDb.ToString("F0") dB</label>
-                <input type="range" class="form-range" min="-20" max="20" step="1"
+                <input type="range" class="form-range" min="-20" max="40" step="1"
                        value="@microphoneGainDb" @onchange="OnMicrophoneGainChanged" />
             </div>
         </div>
+        <label class="inline mt-2">
+            <input type="checkbox" checked="@Engine.AutoGainEnabled" @onchange="OnAutoGainChanged" />
+            麦克风自动增益（自动部分当前 @snapshot.AutoGainDb.ToString("F1") dB）
+        </label>
         <div class="form-text">
-            0 dB 表示原样送出（虚拟线的 +30dB 已经补偿掉了），可以往上加到 +20dB。
-            电平表显示的就是队友实际听到的响度。
+            0 dB 表示原样送出（虚拟线的 +30dB 已经补偿掉了），可加到 +40dB。
+            自动增益按你说话的电平自己调，手动推子是在它之上再叠一层。电平表显示的就是队友实际听到的响度。
         </div>
     </div>
 </div>
@@ -244,6 +248,11 @@
             microphoneGainDb = decibels;
             Engine.SetGain("mic", Math.Pow(10, decibels / 20));
         }
+    }
+
+    private void OnAutoGainChanged(ChangeEventArgs args)
+    {
+        Engine.AutoGainEnabled = args.Value is true;
     }
 
     private static double ToGainDb(double linear)

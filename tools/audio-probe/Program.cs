@@ -26,6 +26,7 @@ internal static class Program
                 "list" => ListDevices(),
                 "probe" => Probe(args[1..]),
                 "record" => Record(args[1..]),
+                "mic" => MicrophoneCheck(args[1..]),
                 _ => Usage()
             };
         }
@@ -42,7 +43,87 @@ internal static class Program
         Console.WriteLine("  audio-probe list");
         Console.WriteLine("  audio-probe probe --render <名称片段或序号> --capture <名称片段或序号> [--ms 1500]");
         Console.WriteLine("  audio-probe record --capture <名称片段或序号> [--ms 5000]");
+        Console.WriteLine("  audio-probe mic [--device <名称片段或序号>] [--ms 12000]");
         return 1;
+    }
+
+    /// <summary>
+    /// 麦克风自检：打印系统输入音量与静音状态，再按秒量原始电平。
+    /// 用来分清"麦克风本身就太轻或被静音"和"我们混音时把它弄丢了"。
+    /// </summary>
+    private static int MicrophoneCheck(string[] args)
+    {
+        var options = ParseOptions(args);
+        var ms = int.TryParse(options.GetValueOrDefault("ms"), out var parsed) ? parsed : 12000;
+
+        using var enumerator = new MMDeviceEnumerator();
+        var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+        var device = Resolve(devices, options.GetValueOrDefault("device"), "输入");
+        var volume = device.AudioEndpointVolume;
+
+        Console.WriteLine($"设备：{device.FriendlyName}（驱动：{device.DeviceFriendlyName}）");
+        Console.WriteLine($"采样格式：{device.AudioClient.MixFormat}");
+        Console.WriteLine(
+            $"系统输入音量：{volume.MasterVolumeLevelScalar * 100:F0}%　静音：{(volume.Mute ? "是" : "否")}"
+        );
+        Console.WriteLine($"开始测量 {ms} 毫秒，请对着麦克风正常说话…");
+
+        double secondSum = 0;
+        double secondPeak = 0;
+        long secondSamples = 0;
+        double bestSecondRms = 0;
+
+        using var capture = new WasapiCapture(device, true, 20);
+        var format = capture.WaveFormat;
+        capture.DataAvailable += (_, eventArgs) =>
+        {
+            var samples = ToMono(eventArgs.Buffer[..eventArgs.BytesRecorded].ToArray(), format);
+            foreach (var sample in samples)
+            {
+                secondSum += sample * sample;
+                secondSamples++;
+                var magnitude = Math.Abs(sample);
+                if (magnitude > secondPeak) secondPeak = magnitude;
+            }
+        };
+
+        capture.StartRecording();
+        for (var second = 1; second * 1000 <= ms; second++)
+        {
+            Thread.Sleep(1000);
+            var rms = Math.Sqrt(secondSum / Math.Max(1, secondSamples));
+            var peakDb = 20 * Math.Log10(Math.Max(secondPeak, 1e-6));
+            var rmsDb = 20 * Math.Log10(Math.Max(rms, 1e-6));
+            Console.WriteLine($"  {second,2}s　峰值 {peakDb,7:F1} dB　RMS {rmsDb,7:F1} dB");
+            if (rms > bestSecondRms) bestSecondRms = rms;
+            secondSum = 0;
+            secondPeak = 0;
+            secondSamples = 0;
+        }
+        capture.StopRecording();
+
+        var bestDb = 20 * Math.Log10(Math.Max(bestSecondRms, 1e-6));
+        Console.WriteLine($"最响的一秒：RMS {bestDb:F1} dB");
+        if (volume.Mute)
+        {
+            Console.WriteLine("结论：这个输入设备在系统里是静音的。");
+            return 3;
+        }
+        if (bestSecondRms < 0.01)
+        {
+            Console.WriteLine(
+                "结论：麦克风电平太低（低于 -40dB）。请把 Windows 声音设置里这个麦克风的输入音量拉满，"
+                    + "或者在应用里把麦克风推子推上去。"
+            );
+            return 3;
+        }
+        if (volume.MasterVolumeLevelScalar < 0.5)
+        {
+            Console.WriteLine("结论：电平能用，但系统输入音量偏低，建议拉满。");
+            return 0;
+        }
+        Console.WriteLine("结论：麦克风电平正常。");
+        return 0;
     }
 
     /// <summary>

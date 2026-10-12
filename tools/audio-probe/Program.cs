@@ -161,10 +161,12 @@ internal static class Program
         var samples = ToMono(recorded.ToArray(), format);
         double sum = 0;
         var peak = 0.0;
+        var clipped = 0;
         foreach (var sample in samples)
         {
             sum += sample * sample;
             if (Math.Abs(sample) > peak) peak = Math.Abs(sample);
+            if (Math.Abs(sample) >= 0.99) clipped++;
         }
         var rms = Math.Sqrt(sum / Math.Max(1, samples.Length));
 
@@ -188,6 +190,11 @@ internal static class Program
         );
         Console.WriteLine(
             $"RMS {rms:F4}，峰值 {peak:F4}，主频约 {bestFrequency:F0}Hz（能量 {bestEnergy:F4}）"
+        );
+        Console.WriteLine(
+            clipped == 0
+                ? "削顶采样：0"
+                : $"削顶采样：{clipped} 个（占 {clipped * 100.0 / Math.Max(1, samples.Length):F2}%），信号已经削顶失真"
         );
         Console.WriteLine($"频段能量：{DescribeBands(samples, format.SampleRate)}");
         if (rms <= 0.002)

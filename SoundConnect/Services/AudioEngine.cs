@@ -48,7 +48,10 @@ public sealed class AudioEngine : IAudioEngine
     /// <summary>自动增益的目标：说话时送到虚拟线里的 RMS（约 -26dB）。</summary>
     private const double MicrophoneTargetRms = 0.05;
     private const double AutoGainMin = 1.0;
-    private const double AutoGainMax = 30.0;
+    /// <summary>上限 +26dB。再往上就不是放大语音，而是在放大底噪了——那听感就是"电流麦"。</summary>
+    private const double AutoGainMax = 20.0;
+    /// <summary>自动增益每次（100ms）最多变化的比例，约 0.6dB，避免电平一跳一跳。</summary>
+    private const double AutoGainStep = 1.07;
 
     private readonly object sync = new();
     private readonly List<string> log = new();
@@ -70,6 +73,7 @@ public sealed class AudioEngine : IAudioEngine
     private double cableCompensation = 1.0;
     private double microphoneGain = 1.0;
     private double autoGain = 1.0;
+    private double autoGainTarget = 1.0;
     private double speechSumSquares;
     private long speechSamples;
     private byte[] gateSilence = [];
@@ -411,6 +415,7 @@ public sealed class AudioEngine : IAudioEngine
             lastMeterAt = DateTime.UtcNow;
             ReportUnderruns();
             UpdateAutoGain();
+            SmoothAutoGain();
             RaiseChanged();
         }
     }
@@ -425,13 +430,18 @@ public sealed class AudioEngine : IAudioEngine
         speechSamples = 0;
         if (!AutoGainEnabled || !IsRunning) return;
 
-        var desired = Math.Clamp(
+        autoGainTarget = Math.Clamp(
             MicrophoneTargetRms / Math.Max(speechRms, 1e-5),
             AutoGainMin,
             AutoGainMax
         );
-        var limited = Math.Clamp(desired, autoGain / 2, autoGain * 2);
-        autoGain = Math.Clamp(limited, AutoGainMin, AutoGainMax);
+    }
+
+    /// <summary>把当前增益朝目标平滑推进：增益跳变会让队友听到"电流"一样的噪声。</summary>
+    private void SmoothAutoGain()
+    {
+        if (!AutoGainEnabled) return;
+        autoGain = Math.Clamp(autoGainTarget, autoGain / AutoGainStep, autoGain * AutoGainStep);
         if (microphoneVolume is not null)
         {
             microphoneVolume.Volume = (float)EffectiveMicrophoneGain;

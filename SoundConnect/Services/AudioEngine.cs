@@ -9,16 +9,24 @@ namespace SoundConnect.Services;
 /// <summary>
 /// 音频通路：把指定进程的音乐和真实麦克风混成一路，写进虚拟线给队友听。
 ///
-/// 两条实测经验写在这里，改代码时别踩回去：
+/// 实测经验写在这里，改代码时别踩回去：
 /// 1. 虚拟线自己带 +30dB（实测 31.62x），所以送进去之前要乘 <see cref="CableCompensation"/>，否则一律削顶。
 /// 2. 浏览器这类多进程程序，音频会话挂在子进程上，而子进程会被回收，所以要抓进程树根。
+/// 3. 混音块必须整块整块地取。源缓冲不够一整块时要在"块边界"上补静音，绝不能在一块中间补——
+///    那样源缓冲永远攒不到深度，每个块都会插一段静音，听感就是持续的卡顿。
+/// 4. 输出由设备自己按实时节奏来拉（<see cref="WasapiOut"/> 直接拉混音图），不要再套一层
+///    自己 sleep 的中间缓冲：那既加延迟，又会为了让缓冲到水位而在中间插静音。
 /// </summary>
 public sealed class AudioEngine : IAudioEngine
 {
     private const double CableCompensation = 0.0316;
-    private const int BlockMilliseconds = 10;
+    private const int AlignmentBlockMs = 5;
     private const int MeterIntervalMs = 100;
     private const int LogLimit = 200;
+    private const int OutputLatencyMs = 20;
+    private const int MicrophoneLatencyMs = 10;
+    /// <summary>源缓冲涨到这个深度就说明两边时钟漂了，直接跳到最新数据，避免延迟越积越大。</summary>
+    private const int MaxSourceBufferedMs = 150;
 
     private readonly object sync = new();
     private readonly List<string> log = new();
@@ -31,10 +39,10 @@ public sealed class AudioEngine : IAudioEngine
     private MixingSampleProvider? mixer;
     private VolumeSampleProvider? musicVolume;
     private VolumeSampleProvider? microphoneVolume;
-    private BufferedWaveProvider? masterBuffer;
+    private BlockAlignedSampleProvider? musicAligned;
+    private BlockAlignedSampleProvider? microphoneAligned;
     private WasapiOut? masterOutput;
-    private CancellationTokenSource? pumpCancellation;
-    private Thread? pumpThread;
+    private MasterWaveProvider? masterProvider;
 
     private double musicGain = 1.0;
     private double microphoneGain = 1.0;
@@ -45,6 +53,11 @@ public sealed class AudioEngine : IAudioEngine
     private bool clipping;
     private bool warnedClipping;
     private DateTime lastMeterAt = DateTime.MinValue;
+    private long musicUnderruns;
+    private long microphoneUnderruns;
+    private long lastMusicStarved;
+    private long lastMicrophoneStarved;
+    private DateTime lastUnderrunAt = DateTime.MinValue;
 
     public event Action? Changed;
 
@@ -67,6 +80,8 @@ public sealed class AudioEngine : IAudioEngine
         OutputLevel = outputLevel,
         OutputPeak = outputPeak,
         IsClipping = clipping,
+        MusicUnderruns = musicUnderruns,
+        MicrophoneUnderruns = microphoneUnderruns,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
         Log = log.ToArray()
@@ -116,7 +131,10 @@ public sealed class AudioEngine : IAudioEngine
         }
 
         return Task.FromResult<IReadOnlyList<AudioProcessInfo>>(
-            found.Values.OrderByDescending(item => item.State == "正在发声").ThenBy(item => item.Name).ToList()
+            found
+                .Values.OrderByDescending(item => item.State == "正在发声")
+                .ThenBy(item => item.Name)
+                .ToList()
         );
     }
 
@@ -128,17 +146,16 @@ public sealed class AudioEngine : IAudioEngine
             FindDevice(DataFlow.Render, options.OutputDeviceId)
             ?? throw new InvalidOperationException("找不到送队友的输出设备");
         var deviceFormat = outputDevice.AudioClient.MixFormat;
-        // 注意：设备的混音格式是 WaveFormatExtensible，而 NAudio 的 ToSampleProvider 不认它，
-        // 所以整条链路统一用普通 32 位浮点（字节布局一样，WASAPI 也接受）。
         var mixFormat = WaveFormat.CreateIeeeFloatWaveFormat(
             deviceFormat.SampleRate,
             deviceFormat.Channels
         );
 
-        musicBuffer = CreateBuffer(mixFormat);
         var sources = new List<ISampleProvider>();
 
-        musicVolume = new VolumeSampleProvider(musicBuffer.ToSampleProvider())
+        musicBuffer = CreateBuffer(mixFormat);
+        musicAligned = new BlockAlignedSampleProvider(musicBuffer);
+        musicVolume = new VolumeSampleProvider(musicAligned)
         {
             Volume = (float)musicGain
         };
@@ -163,48 +180,45 @@ public sealed class AudioEngine : IAudioEngine
             var microphoneDevice =
                 FindDevice(DataFlow.Capture, options.MicrophoneDeviceId)
                 ?? throw new InvalidOperationException("找不到麦克风设备");
-            microphoneCapture = new WasapiCapture(microphoneDevice, true, 20);
-            var microphoneFormat = microphoneCapture.WaveFormat;
-            microphoneBuffer = CreateBuffer(
-                WaveFormat.CreateIeeeFloatWaveFormat(
-                    microphoneFormat.SampleRate,
-                    microphoneFormat.Channels
-                )
-            );
-            ISampleProvider microphoneProvider = microphoneBuffer.ToSampleProvider();
-            if (microphoneFormat.SampleRate != mixFormat.SampleRate)
+            microphoneCapture = new WasapiCapture(microphoneDevice, true, MicrophoneLatencyMs);
+            var deviceMicrophoneFormat = microphoneCapture.WaveFormat;
+            var bufferFormat = ToBufferFormat(deviceMicrophoneFormat);
+            microphoneBuffer = CreateBuffer(bufferFormat);
+
+            microphoneAligned = new BlockAlignedSampleProvider(microphoneBuffer);
+            ISampleProvider microphoneSource = microphoneAligned;
+            if (bufferFormat.SampleRate != mixFormat.SampleRate)
             {
-                microphoneProvider = new WdlResamplingSampleProvider(
-                    microphoneProvider,
+                microphoneSource = new WdlResamplingSampleProvider(
+                    microphoneSource,
                     mixFormat.SampleRate
                 );
             }
-            if (microphoneFormat.Channels != mixFormat.Channels)
+            if (bufferFormat.Channels != mixFormat.Channels)
             {
-                microphoneProvider = new ChannelMapperSampleProvider(
-                    microphoneProvider,
+                microphoneSource = new ChannelMapperSampleProvider(
+                    microphoneSource,
                     mixFormat.Channels
                 );
             }
-            microphoneVolume = new VolumeSampleProvider(microphoneProvider)
+            microphoneVolume = new VolumeSampleProvider(microphoneSource)
             {
                 Volume = (float)microphoneGain
             };
             sources.Add(microphoneVolume);
             microphoneCapture.DataAvailable += OnMicrophoneData;
             microphoneCapture.StartRecording();
-            Log($"麦克风已接入：{microphoneDevice.FriendlyName}（{microphoneFormat.SampleRate}Hz/{microphoneFormat.Channels}ch）");
+            Log(
+                $"麦克风已接入：{microphoneDevice.FriendlyName}"
+                    + $"（{bufferFormat.SampleRate}Hz/{bufferFormat.Channels}ch/{bufferFormat.BitsPerSample}bit）"
+            );
         }
 
         mixer = new MixingSampleProvider(sources) { ReadFully = true };
-        masterBuffer = CreateBuffer(mixFormat);
-        masterOutput = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, 50);
-        masterOutput.Init(masterBuffer);
+        masterProvider = new MasterWaveProvider(this, mixer);
+        masterOutput = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, OutputLatencyMs);
+        masterOutput.Init(masterProvider);
         masterOutput.Play();
-
-        pumpCancellation = new CancellationTokenSource();
-        pumpThread = new Thread(Pump) { IsBackground = true, Name = "sound-connect-mix" };
-        pumpThread.Start();
 
         IsRunning = true;
         Log($"通路已建立：混音 → {outputDevice.FriendlyName}（已按 -30dB 补偿虚拟线增益）");
@@ -213,12 +227,6 @@ public sealed class AudioEngine : IAudioEngine
 
     public Task StopAsync()
     {
-        var cancellation = pumpCancellation;
-        pumpCancellation = null;
-        cancellation?.Cancel();
-        pumpThread?.Join(500);
-        pumpThread = null;
-
         if (musicCapture is not null)
         {
             musicCapture.DataAvailable -= OnMusicData;
@@ -236,10 +244,12 @@ public sealed class AudioEngine : IAudioEngine
         masterOutput?.Stop();
         masterOutput?.Dispose();
         masterOutput = null;
-        masterBuffer = null;
+        masterProvider = null;
         mixer = null;
         musicVolume = null;
         microphoneVolume = null;
+        musicAligned = null;
+        microphoneAligned = null;
         musicBuffer = null;
         microphoneBuffer = null;
 
@@ -249,6 +259,10 @@ public sealed class AudioEngine : IAudioEngine
         outputPeak = 0;
         clipping = false;
         warnedClipping = false;
+        musicUnderruns = 0;
+        microphoneUnderruns = 0;
+        lastMusicStarved = 0;
+        lastMicrophoneStarved = 0;
         if (IsRunning)
         {
             Log("通路已停止");
@@ -281,7 +295,7 @@ public sealed class AudioEngine : IAudioEngine
     private void OnMusicData(byte[] chunk)
     {
         musicLevel = Level(chunk, musicBuffer?.WaveFormat) * musicGain;
-        musicBuffer?.AddSamples(chunk, 0, chunk.Length);
+        Push(musicBuffer, chunk, chunk.Length, "音乐");
     }
 
     private void OnMicrophoneData(object? sender, WaveInEventArgs eventArgs)
@@ -289,62 +303,68 @@ public sealed class AudioEngine : IAudioEngine
         microphoneLevel =
             Level(eventArgs.Buffer, microphoneBuffer?.WaveFormat, eventArgs.BytesRecorded)
             * microphoneGain;
-        microphoneBuffer?.AddSamples(eventArgs.Buffer, 0, eventArgs.BytesRecorded);
+        Push(microphoneBuffer, eventArgs.Buffer, eventArgs.BytesRecorded, "麦克风");
     }
 
-    private void Pump()
+    private void Push(BufferedWaveProvider? buffer, byte[] data, int count, string name)
     {
-        var cancel = pumpCancellation;
-        var block = mixer;
-        var target = masterBuffer;
-        if (cancel is null || block is null || target is null) return;
-
-        var format = block.WaveFormat;
-        var frames = format.SampleRate * BlockMilliseconds / 1000;
-        var samples = new float[frames * format.Channels];
-        var bytes = new byte[samples.Length * 4];
-        var peakSinceReport = 0.0;
-
-        while (!cancel.IsCancellationRequested)
+        if (buffer is null) return;
+        if (buffer.BufferedDuration.TotalMilliseconds > MaxSourceBufferedMs)
         {
-            if (target.BufferedDuration.TotalMilliseconds > 150)
-            {
-                Thread.Sleep(5);
-                continue;
-            }
+            // 采集端和输出端是两个独立时钟，跑久了缓冲会缓慢涨上去；涨起来就等于白加延迟
+            buffer.ClearBuffer();
+            Log($"{name}源缓冲积压超过 {MaxSourceBufferedMs}ms，已跳到最新数据（时钟漂移）");
+        }
+        buffer.AddSamples(data, 0, count);
+    }
 
-            var read = block.Read(samples, 0, samples.Length);
-            if (read <= 0)
-            {
-                Thread.Sleep(5);
-                continue;
-            }
+    /// <summary>设备每次拉数据时都会走这里：量电平、补偿虚拟线的 +30dB、再交出去。</summary>
+    private void OnMixedBlock(float[] samples, int count)
+    {
+        // 这里量到的就是"队友实际听到的电平"：虚拟线自带的 +30dB 正好抵消下面这次衰减
+        outputLevel = Level(samples, count);
+        var peak = 0.0;
+        for (var index = 0; index < count; index++)
+        {
+            var magnitude = Math.Abs(samples[index]);
+            if (magnitude > peak) peak = magnitude;
+            samples[index] *= (float)CableCompensation;
+        }
+        outputPeak = peak;
+        clipping = peak >= 0.99;
+        if (clipping && !warnedClipping)
+        {
+            warnedClipping = true;
+            Log("输出削顶了：把音乐或麦克风音量往下调一点");
+        }
 
-            // 这里量到的就是"队友实际听到的电平"：虚拟线自带的 +30dB 正好抵消下面这次衰减
-            outputLevel = Level(samples, read);
-            for (var index = 0; index < read; index++)
-            {
-                var magnitude = Math.Abs(samples[index]);
-                if (magnitude > peakSinceReport) peakSinceReport = magnitude;
-                samples[index] *= (float)CableCompensation;
-            }
+        if ((DateTime.UtcNow - lastMeterAt).TotalMilliseconds >= MeterIntervalMs)
+        {
+            lastMeterAt = DateTime.UtcNow;
+            ReportUnderruns();
+            RaiseChanged();
+        }
+    }
 
-            Buffer.BlockCopy(samples, 0, bytes, 0, read * 4);
-            target.AddSamples(bytes, 0, read * 4);
+    /// <summary>
+    /// 每秒报一次源侧的欠载次数。这个数就是"卡顿"的直接来源：
+    /// 非零说明源缓冲被抽空了，那一块只能补静音；稳定在 0 才说明既没丢数据也没插静音。
+    /// </summary>
+    private void ReportUnderruns()
+    {
+        if ((DateTime.UtcNow - lastUnderrunAt).TotalMilliseconds < 1000) return;
+        lastUnderrunAt = DateTime.UtcNow;
 
-            if ((DateTime.UtcNow - lastMeterAt).TotalMilliseconds >= MeterIntervalMs)
-            {
-                lastMeterAt = DateTime.UtcNow;
-                outputPeak = peakSinceReport;
-                clipping = peakSinceReport >= 0.99;
-                if (clipping && !warnedClipping)
-                {
-                    warnedClipping = true;
-                    Log("输出削顶了：把音乐或麦克风音量往下调一点");
-                }
-                peakSinceReport = 0;
-                RaiseChanged();
-            }
+        var musicStarved = musicAligned?.StarvedCount ?? 0;
+        var microphoneStarved = microphoneAligned?.StarvedCount ?? 0;
+        musicUnderruns = musicStarved - lastMusicStarved;
+        microphoneUnderruns = microphoneStarved - lastMicrophoneStarved;
+        lastMusicStarved = musicStarved;
+        lastMicrophoneStarved = microphoneStarved;
+
+        if (musicUnderruns > 0 || microphoneUnderruns > 0)
+        {
+            Log($"欠载：音乐 {musicUnderruns} 次 / 麦克风 {microphoneUnderruns} 次（每秒）");
         }
     }
 
@@ -352,10 +372,21 @@ public sealed class AudioEngine : IAudioEngine
     {
         return new BufferedWaveProvider(format)
         {
-            BufferDuration = TimeSpan.FromMilliseconds(500),
+            BufferDuration = TimeSpan.FromMilliseconds(300),
             ReadFully = true,
             DiscardOnBufferOverflow = true
         };
+    }
+
+    /// <summary>
+    /// 采集设备给的格式里，编码可能是 Extensible（NAudio 的 ToSampleProvider 不认它），
+    /// 这里换成等价的普通格式，字节布局一样，原始数据可以直接往里塞。
+    /// </summary>
+    private static WaveFormat ToBufferFormat(WaveFormat deviceFormat)
+    {
+        return ProcessLoopbackCapture.IsFloat(deviceFormat)
+            ? WaveFormat.CreateIeeeFloatWaveFormat(deviceFormat.SampleRate, deviceFormat.Channels)
+            : new WaveFormat(deviceFormat.SampleRate, deviceFormat.BitsPerSample, deviceFormat.Channels);
     }
 
     private List<AudioDeviceInfo> ReadDevices(DataFlow flow, string kind)
@@ -438,6 +469,97 @@ public sealed class AudioEngine : IAudioEngine
         Changed?.Invoke();
     }
 
+    /// <summary>交出去的字节流，由音频设备按自己的实时节奏来拉。</summary>
+    private sealed class MasterWaveProvider : IWaveProvider
+    {
+        private readonly AudioEngine engine;
+        private readonly ISampleProvider source;
+        private float[] buffer = [];
+
+        public MasterWaveProvider(AudioEngine engine, ISampleProvider source)
+        {
+            this.engine = engine;
+            this.source = source;
+            WaveFormat = source.WaveFormat;
+        }
+
+        public WaveFormat WaveFormat { get; }
+
+        public int Read(byte[] destination, int offset, int count)
+        {
+            var samples = count / 4;
+            if (buffer.Length < samples)
+            {
+                buffer = new float[samples];
+            }
+            var read = source.Read(buffer, 0, samples);
+            if (read <= 0) return 0;
+            engine.OnMixedBlock(buffer, read);
+            Buffer.BlockCopy(buffer, 0, destination, offset, read * 4);
+            return read * 4;
+        }
+    }
+
+    /// <summary>
+    /// 整块取数：源缓冲够一整块才读，不够就整块给静音并且不消耗缓冲。
+    /// 这样缓冲会自己预热到一个稳定深度，之后既不会丢数据也不会插静音。
+    /// </summary>
+    private sealed class BlockAlignedSampleProvider : ISampleProvider
+    {
+        private readonly BufferedWaveProvider buffer;
+        private readonly ISampleProvider source;
+        private readonly int blockSamples;
+        private readonly int blockBytes;
+        private readonly float[] carry;
+        private int carryOffset;
+        private int carryLength;
+
+        public BlockAlignedSampleProvider(BufferedWaveProvider buffer)
+        {
+            this.buffer = buffer;
+            source = buffer.ToSampleProvider();
+            WaveFormat = source.WaveFormat;
+            var framesPerBlock = Math.Max(1, WaveFormat.SampleRate * AlignmentBlockMs / 1000);
+            blockSamples = framesPerBlock * WaveFormat.Channels;
+            blockBytes = framesPerBlock * buffer.WaveFormat.BlockAlign;
+            carry = new float[blockSamples];
+        }
+
+        public WaveFormat WaveFormat { get; }
+
+        public long StarvedCount { get; private set; }
+
+        public int Read(float[] output, int offset, int count)
+        {
+            var written = 0;
+            while (written < count)
+            {
+                if (carryOffset >= carryLength)
+                {
+                    if (buffer.BufferedBytes < blockBytes)
+                    {
+                        StarvedCount++;
+                        Array.Clear(output, offset + written, count - written);
+                        return count;
+                    }
+                    carryLength = source.Read(carry, 0, blockSamples);
+                    carryOffset = 0;
+                    if (carryLength <= 0)
+                    {
+                        Array.Clear(output, offset + written, count - written);
+                        return count;
+                    }
+                }
+
+                var take = Math.Min(carryLength - carryOffset, count - written);
+                Array.Copy(carry, carryOffset, output, offset + written, take);
+                carryOffset += take;
+                written += take;
+            }
+            return count;
+        }
+    }
+
     /// <summary>把采样统一到目标声道数：单声道复制，多声道取前几路。</summary>
     private sealed class ChannelMapperSampleProvider : ISampleProvider
     {
@@ -473,7 +595,8 @@ public sealed class AudioEngine : IAudioEngine
             {
                 for (var channel = 0; channel < targetChannels; channel++)
                 {
-                    var sourceChannel = sourceChannels == 1 ? 0 : Math.Min(channel, sourceChannels - 1);
+                    var sourceChannel =
+                        sourceChannels == 1 ? 0 : Math.Min(channel, sourceChannels - 1);
                     destination[offset + frame * targetChannels + channel] =
                         buffer[frame * sourceChannels + sourceChannel];
                 }

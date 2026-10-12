@@ -78,7 +78,9 @@ namespace SoundConnect.WinUI
                         await Task.Delay(1000);
                         var snapshot = engine.Snapshot;
                         report.Add(
-                            $"t={second}s 音乐 {snapshot.MusicLevel:F4} / 麦克风 {snapshot.MicrophoneLevel:F4} / 总输出 {snapshot.OutputLevel:F4}"
+                            $"t={second}s 音乐 {snapshot.MusicLevel:F4} / 麦克风 {snapshot.MicrophoneLevel:F4}"
+                                + $" / 总输出 {snapshot.OutputLevel:F4} / 峰值 {snapshot.OutputPeak:F3}"
+                                + $" / 欠载 音乐{snapshot.MusicUnderruns} 麦克风{snapshot.MicrophoneUnderruns}"
                         );
                     }
                     await engine.StopAsync();

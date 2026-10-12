@@ -72,12 +72,17 @@ internal static class Program
         double secondPeak = 0;
         long secondSamples = 0;
         double bestSecondRms = 0;
+        var captured = new List<float>();
 
         using var capture = new WasapiCapture(device, true, 20);
         var format = capture.WaveFormat;
         capture.DataAvailable += (_, eventArgs) =>
         {
             var samples = ToMono(eventArgs.Buffer[..eventArgs.BytesRecorded].ToArray(), format);
+            if (captured.Count < format.SampleRate * 3)
+            {
+                captured.AddRange(samples);
+            }
             foreach (var sample in samples)
             {
                 secondSum += sample * sample;
@@ -104,6 +109,7 @@ internal static class Program
 
         var bestDb = 20 * Math.Log10(Math.Max(bestSecondRms, 1e-6));
         Console.WriteLine($"最响的一秒：RMS {bestDb:F1} dB");
+        Console.WriteLine($"频段能量：{DescribeBands(captured.ToArray(), format.SampleRate)}");
         if (volume.Mute)
         {
             Console.WriteLine("结论：这个输入设备在系统里是静音的。");

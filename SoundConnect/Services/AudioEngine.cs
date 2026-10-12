@@ -59,6 +59,7 @@ public sealed class AudioEngine : IAudioEngine
 
     private ProcessLoopbackCapture? musicCapture;
     private WasapiCapture? microphoneCapture;
+    private WasapiCapture? partnerCapture;
     private BufferedWaveProvider? musicBuffer;
     private BufferedWaveProvider? microphoneBuffer;
     private MixingSampleProvider? mixer;
@@ -90,6 +91,11 @@ public sealed class AudioEngine : IAudioEngine
     private long lastMusicStarved;
     private long lastMicrophoneStarved;
     private DateTime lastUnderrunAt = DateTime.MinValue;
+    private double sentLevel;
+    private double sentPeak;
+    private double sentPeakSinceReport;
+    private long sentClipSamples;
+    private long sentSamples;
 
     public event Action? Changed;
 
@@ -120,6 +126,9 @@ public sealed class AudioEngine : IAudioEngine
         MusicUnderruns = musicUnderruns,
         MicrophoneUnderruns = microphoneUnderruns,
         AutoGainDb = AutoGainEnabled ? 20 * Math.Log10(Math.Max(autoGain, 0.0001)) : 0,
+        SentLevel = sentLevel,
+        SentPeak = sentPeak,
+        SentClipSamples = sentClipSamples,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
         Log = log.ToArray()
@@ -259,6 +268,8 @@ public sealed class AudioEngine : IAudioEngine
         masterOutput.Init(masterProvider);
         masterOutput.Play();
 
+        StartPartnerMonitor(outputDevice);
+
         IsRunning = true;
         Log(
             $"通路已建立：混音 → {outputDevice.FriendlyName}"
@@ -283,6 +294,13 @@ public sealed class AudioEngine : IAudioEngine
             microphoneCapture.Dispose();
             microphoneCapture = null;
         }
+        if (partnerCapture is not null)
+        {
+            partnerCapture.DataAvailable -= OnPartnerData;
+            partnerCapture.StopRecording();
+            partnerCapture.Dispose();
+            partnerCapture = null;
+        }
 
         masterOutput?.Stop();
         masterOutput?.Dispose();
@@ -300,6 +318,10 @@ public sealed class AudioEngine : IAudioEngine
         microphoneLevel = 0;
         outputLevel = 0;
         outputPeak = 0;
+        sentLevel = 0;
+        sentPeak = 0;
+        sentPeakSinceReport = 0;
+        sentClipSamples = 0;
         clipping = false;
         warnedClipping = false;
         musicUnderruns = 0;
@@ -339,6 +361,70 @@ public sealed class AudioEngine : IAudioEngine
     {
         musicLevel = Level(chunk, musicBuffer?.WaveFormat) * musicGain;
         Push(musicBuffer, chunk, chunk.Length, "音乐");
+    }
+
+    /// <summary>
+    /// 捕获虚拟线的录音端，量"队友实际收到的信号"。
+    /// 质量好不好不用再等朋友反馈：这里直接能看到电平、峰值和削顶采样数。
+    /// </summary>
+    private void StartPartnerMonitor(MMDevice outputDevice)
+    {
+        try
+        {
+            var partner = FindCapturePartner(outputDevice);
+            if (partner is null)
+            {
+                Log("没找到这条线的录音端，跳过线路监测");
+                return;
+            }
+            partnerCapture = new WasapiCapture(partner, true, 20);
+            partnerCapture.DataAvailable += OnPartnerData;
+            partnerCapture.StartRecording();
+            Log($"线路监测已接入：{partner.FriendlyName}");
+        }
+        catch (Exception error)
+        {
+            Log($"线路监测启动失败（不影响通路）：{error.Message}");
+        }
+    }
+
+    private MMDevice? FindCapturePartner(MMDevice outputDevice)
+    {
+        foreach (
+            var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
+        )
+        {
+            if (
+                string.Equals(
+                    device.DeviceFriendlyName,
+                    outputDevice.DeviceFriendlyName,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return device;
+            }
+        }
+        return null;
+    }
+
+    private void OnPartnerData(object? sender, WaveInEventArgs eventArgs)
+    {
+        double sum = 0;
+        var samples = 0;
+        for (var offset = 0; offset + 4 <= eventArgs.BytesRecorded; offset += 4)
+        {
+            var value = BitConverter.ToSingle(eventArgs.Buffer, offset);
+            sum += value * value;
+            samples++;
+            var magnitude = Math.Abs(value);
+            if (magnitude > sentPeakSinceReport) sentPeakSinceReport = magnitude;
+            if (magnitude >= 0.99) sentClipSamples++;
+        }
+        if (samples > 0)
+        {
+            sentLevel = Math.Sqrt(sum / samples);
+        }
     }
 
     private void OnMicrophoneData(object? sender, WaveInEventArgs eventArgs)
@@ -456,6 +542,9 @@ public sealed class AudioEngine : IAudioEngine
     {
         if ((DateTime.UtcNow - lastUnderrunAt).TotalMilliseconds < 1000) return;
         lastUnderrunAt = DateTime.UtcNow;
+
+        sentPeak = sentPeakSinceReport;
+        sentPeakSinceReport = 0;
 
         var musicStarved = musicAligned?.StarvedCount ?? 0;
         var microphoneStarved = microphoneAligned?.StarvedCount ?? 0;

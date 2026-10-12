@@ -27,6 +27,10 @@ public sealed class AudioEngineSnapshot
     public long MusicUnderruns { get; init; }
     public long MicrophoneUnderruns { get; init; }
     public double AutoGainDb { get; init; }
+    /// <summary>从虚拟线录音端量到的"队友实际收到的信号"。</summary>
+    public double SentLevel { get; init; }
+    public double SentPeak { get; init; }
+    public long SentClipSamples { get; init; }
     public double MusicGain { get; init; }
     public double MicrophoneGain { get; init; }
     public IReadOnlyList<string> Log { get; init; } = Array.Empty<string>();

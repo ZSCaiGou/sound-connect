@@ -80,6 +80,12 @@
         }
 
         <div class="form-text">
+            队友收到的信号（从虚拟线录音端实测）：电平 @ToDb(snapshot.SentLevel) /
+            峰值 @ToDb(snapshot.SentPeak) / 每秒削顶 @snapshot.SentClipSamples 个采样。
+            削顶一直是 0、峰值在 -6dB 以下，就是干净的。
+        </div>
+
+        <div class="form-text">
             欠载计数（每秒）：音乐 @snapshot.MusicUnderruns 次 / 麦克风 @snapshot.MicrophoneUnderruns 次。
             稳定在 0 表示音频连续；一直是正数说明有卡顿。
         </div>

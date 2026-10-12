@@ -102,7 +102,6 @@ public sealed class AudioEngine : IAudioEngine
     private double sentPeak;
     private double sentPeakSinceReport;
     private long sentClipSamples;
-    private long sentSamples;
 
     public event Action? Changed;
 

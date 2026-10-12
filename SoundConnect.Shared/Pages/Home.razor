@@ -1,14 +1,245 @@
 @page "/"
 @using SoundConnect.Shared.Services
-@inject IFormFactor FormFactor
+@inject IAudioEngine Engine
+@implements IDisposable
 
-<PageTitle>Home</PageTitle>
+<PageTitle>音频通路</PageTitle>
 
-<h1>Hello, wradold!</h1>
+<h1 class="mb-3">音频通路</h1>
 
-Welcome to your new app running on <em>@factor</em> using <em>@platform</em>.
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label">音乐来源</label>
+                <select class="form-select" @bind="musicProcessId">
+                    <option value="0">（不采集音乐）</option>
+                    @foreach (var item in processes)
+                    {
+                        <option value="@item.ProcessId">@item.Name · PID @item.ProcessId · @item.State</option>
+                    }
+                </select>
+                <div class="form-text">只抓这个进程的声音，其他程序一概不碰。</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">麦克风</label>
+                <select class="form-select" @bind="microphoneId">
+                    <option value="">（不用麦克风）</option>
+                    @foreach (var device in Engine.CaptureDevices)
+                    {
+                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
+                    }
+                </select>
+                <div class="form-text">要选真实麦克风，别选虚拟线。</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">送队友</label>
+                <select class="form-select" @bind="outputId">
+                    <option value="">（系统默认，勿选）</option>
+                    @foreach (var device in Engine.RenderDevices)
+                    {
+                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
+                    }
+                </select>
+                <div class="form-text">选虚拟线，Discord 的输入设备要指向同一条线的录音端。</div>
+            </div>
+        </div>
+
+        <div class="d-flex gap-2 mt-3">
+            <button class="btn btn-primary" @onclick="OnStart" disabled="@(busy || Engine.IsRunning)">建立通路</button>
+            <button class="btn btn-outline-danger" @onclick="OnStop" disabled="@(!Engine.IsRunning)">停止</button>
+            <button class="btn btn-outline-secondary" @onclick="OnRefresh">刷新设备与进程</button>
+        </div>
+
+        @if (!string.IsNullOrEmpty(message))
+        {
+            <div class="alert alert-warning mt-3 mb-0 py-2">@message</div>
+        }
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h2 class="h5 mb-3">电平</h2>
+        @foreach (var meter in Meters)
+        {
+            <div class="d-flex align-items-center gap-2 mb-2">
+                <span style="width:90px">@meter.Label</span>
+                <div class="progress flex-grow-1" style="height:8px">
+                    <div class="progress-bar" style="width:@(Percent(meter.Value))%"></div>
+                </div>
+                <span style="width:70px;text-align:right">@ToDb(meter.Value)</span>
+            </div>
+        }
+
+        <hr />
+
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">音乐音量 @musicGain.ToString("F2")</label>
+                <input type="range" class="form-range" min="0" max="1.5" step="0.05"
+                       value="@musicGain" @onchange="OnMusicGainChanged" />
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">麦克风音量 @microphoneGain.ToString("F2")</label>
+                <input type="range" class="form-range" min="0" max="1.5" step="0.05"
+                       value="@microphoneGain" @onchange="OnMicrophoneGainChanged" />
+            </div>
+        </div>
+        <div class="form-text">
+            两个音量都带上了 -30dB 的虚拟线补偿，你调的是相对比例，直接调就行。
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h2 class="h5">日志</h2>
+        <pre class="mb-0" style="max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap">@string.Join(Environment.NewLine, snapshot.Log)</pre>
+    </div>
+</div>
 
 @code {
-    private string factor => FormFactor.GetFormFactor();
-    private string platform => FormFactor.GetPlatform();
+    private sealed record MeterRow(string Label, double Value);
+
+    private AudioEngineSnapshot snapshot = new();
+    private IReadOnlyList<AudioProcessInfo> processes = [];
+    private int musicProcessId;
+    private string microphoneId = string.Empty;
+    private string outputId = string.Empty;
+    private double musicGain = 0.7;
+    private double microphoneGain = 1;
+    private bool busy;
+    private string message = string.Empty;
+
+    private MeterRow[] Meters =>
+    [
+        new("音乐", snapshot.MusicLevel),
+        new("麦克风", snapshot.MicrophoneLevel),
+        new("总输出", snapshot.OutputLevel)
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Engine.Changed += OnEngineChanged;
+        await RefreshAsync();
+    }
+
+    public void Dispose()
+    {
+        Engine.Changed -= OnEngineChanged;
+    }
+
+    private void OnEngineChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            snapshot = Engine.Snapshot;
+            musicGain = snapshot.MusicGain;
+            microphoneGain = snapshot.MicrophoneGain;
+            StateHasChanged();
+        });
+    }
+
+    private async Task RefreshAsync()
+    {
+        await Engine.RefreshDevicesAsync();
+        processes = await Engine.ListAudioProcessesAsync();
+
+        outputId = PickOutputDevice();
+        if (string.IsNullOrEmpty(microphoneId))
+        {
+            microphoneId = Engine.CaptureDevices.FirstOrDefault(device => !device.IsVirtual)?.Id
+                ?? string.Empty;
+        }
+        if (musicProcessId == 0)
+        {
+            musicProcessId = processes.FirstOrDefault(item => item.State == "正在发声")?.ProcessId ?? 0;
+        }
+
+        snapshot = Engine.Snapshot;
+        StateHasChanged();
+    }
+
+    private string PickOutputDevice()
+    {
+        if (Engine.RenderDevices.Any(device => device.Id == outputId))
+        {
+            return outputId;
+        }
+        // 优先选实测过的那条线
+        var verified = Engine.RenderDevices.FirstOrDefault(device =>
+            device.Name.Contains("Steam Streaming Microphone", StringComparison.OrdinalIgnoreCase)
+        );
+        return verified?.Id
+            ?? Engine.RenderDevices.FirstOrDefault(device => device.IsVirtual)?.Id
+            ?? string.Empty;
+    }
+
+    private async Task OnRefresh()
+    {
+        busy = true;
+        message = string.Empty;
+        try
+        {
+            await RefreshAsync();
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task OnStart()
+    {
+        busy = true;
+        message = string.Empty;
+        try
+        {
+            await Engine.StartAsync(new AudioStartOptions(musicProcessId, microphoneId, outputId));
+        }
+        catch (Exception error)
+        {
+            message = $"建立通路失败：{error.Message}";
+        }
+        finally
+        {
+            busy = false;
+            snapshot = Engine.Snapshot;
+        }
+    }
+
+    private async Task OnStop()
+    {
+        await Engine.StopAsync();
+        snapshot = Engine.Snapshot;
+    }
+
+    private void OnMusicGainChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var value))
+        {
+            musicGain = value;
+            Engine.SetGain("music", value);
+        }
+    }
+
+    private void OnMicrophoneGainChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var value))
+        {
+            microphoneGain = value;
+            Engine.SetGain("mic", value);
+        }
+    }
+
+    private static int Percent(double value)
+    {
+        return (int)Math.Clamp(value * 260, 0, 100);
+    }
+
+    private static string ToDb(double value)
+    {
+        return value <= 0.00001 ? "-∞ dB" : $"{20 * Math.Log10(value):F0} dB";
+    }
 }

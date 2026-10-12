@@ -1,13 +1,13 @@
 using System.Runtime.InteropServices;
 
-namespace SoundConnect.ProcessCapture;
+namespace SoundConnect.Audio;
 
 /// <summary>
 /// 进程树查询。浏览器会把音频交给子进程（audio service）渲染，而音频会话挂在那个子进程上；
 /// 直接抓子进程也能通，但子进程会被浏览器回收，抓到时流就断了。
 /// 所以先往上找到"同一个程序自己的树根"再下手。
 /// </summary>
-internal static class ProcessTree
+public static class ProcessTree
 {
     private const uint SnapshotProcesses = 0x00000002;
 

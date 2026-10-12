@@ -1,13 +1,13 @@
 using System.Runtime.InteropServices;
 
-namespace SoundConnect.ProcessCapture;
+namespace SoundConnect.Audio;
 
 /// <summary>
 /// WASAPI 进程回环需要的 COM 互操作。Windows 10 2004（build 19041）起提供：
 /// ActivateAudioInterfaceAsync 配 AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK，
 /// 就能只抓指定进程（含其子进程树）的声音，其他程序一概不碰。
 /// </summary>
-internal static class AudioInterop
+public static class AudioInterop
 {
     /// <summary>进程回环专用的虚拟设备路径，不是系统里真实存在的端点。</summary>
     private const string VirtualAudioDeviceProcessLoopback = @"VAD\Process_Loopback";

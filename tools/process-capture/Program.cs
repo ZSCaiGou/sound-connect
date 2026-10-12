@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using SoundConnect.Audio;
 
 namespace SoundConnect.ProcessCapture;
 

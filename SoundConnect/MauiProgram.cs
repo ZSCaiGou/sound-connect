@@ -18,6 +18,7 @@ namespace SoundConnect
 
             // Add device-specific services used by the SoundConnect.Shared project
             builder.Services.AddSingleton<IFormFactor, FormFactor>();
+            builder.Services.AddSingleton<IAudioEngine, AudioEngine>();
 
             builder.Services.AddMauiBlazorWebView();
 

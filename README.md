@@ -36,6 +36,7 @@
 ```bash
 dotnet build SoundConnect.slnx        # 构建
 dotnet run --project SoundConnect     # 运行桌面应用
+dotnet run --project SoundConnect -- --selftest   # 无界面自检：跑一遍音频通路并写 selftest.log
 
 # 虚拟线自检
 dotnet run --project tools/audio-probe -- list

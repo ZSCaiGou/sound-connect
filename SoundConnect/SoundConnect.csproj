@@ -63,6 +63,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SoundConnect.Shared\SoundConnect.Shared.csproj" />
+    <ProjectReference Include="..\src\SoundConnect.Audio\SoundConnect.Audio.csproj" />
   </ItemGroup>
 
 </Project>

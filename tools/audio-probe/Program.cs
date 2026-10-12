@@ -189,6 +189,7 @@ internal static class Program
         Console.WriteLine(
             $"RMS {rms:F4}，峰值 {peak:F4}，主频约 {bestFrequency:F0}Hz（能量 {bestEnergy:F4}）"
         );
+        Console.WriteLine($"频段能量：{DescribeBands(samples, format.SampleRate)}");
         if (rms <= 0.002)
         {
             Console.WriteLine("结论：这条线上没有信号。");
@@ -387,6 +388,29 @@ internal static class Program
         }
         var power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
         return length <= 0 ? 0 : Math.Sqrt(Math.Max(0, power)) / (length / 2.0);
+    }
+
+    /// <summary>
+    /// 粗略分频段能量。人声的能量集中在 100-3000Hz，白噪声是平的，
+    /// 而"数据被按错误格式解释"那种噪声会在极高频堆一大坨，一眼能看出来。
+    /// </summary>
+    private static string DescribeBands(float[] samples, int sampleRate)
+    {
+        int[] edges = [0, 300, 1000, 3000, 8000, 16000];
+        var window = Math.Min(samples.Length, sampleRate);
+        var parts = new List<string>();
+        for (var band = 0; band < edges.Length - 1; band++)
+        {
+            double sum = 0;
+            var count = 0;
+            for (var frequency = Math.Max(edges[band], 50); frequency < edges[band + 1]; frequency += 50)
+            {
+                sum += Goertzel(samples, 0, window, sampleRate, frequency);
+                count++;
+            }
+            parts.Add($"{edges[band]}-{edges[band + 1]}Hz {(count == 0 ? 0 : sum / count):F4}");
+        }
+        return string.Join("　", parts);
     }
 
     private static float[] ToMono(byte[] data, WaveFormat format)

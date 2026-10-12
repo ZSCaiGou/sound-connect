@@ -184,8 +184,11 @@
         {
             return outputId;
         }
-        // 优先选实测过的那条线
+        // 优先选 VB-CABLE（实测单位增益、48k 立体声），其次是实测过的 Steam 那条
         var verified = Engine.RenderDevices.FirstOrDefault(device =>
+            device.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase)
+        );
+        verified ??= Engine.RenderDevices.FirstOrDefault(device =>
             device.Name.Contains("Steam Streaming Microphone", StringComparison.OrdinalIgnoreCase)
         );
         return verified?.Id

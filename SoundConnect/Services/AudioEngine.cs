@@ -19,7 +19,19 @@ namespace SoundConnect.Services;
 /// </summary>
 public sealed class AudioEngine : IAudioEngine
 {
-    private const double CableCompensation = 0.0316;
+    /// <summary>
+    /// 不同虚拟线自带的增益不一样，实测：Steam 那条 +30dB（31.62x），VB-CABLE 是单位增益。
+    /// 这条线涨多少，我们送进去之前就压多少，否则不是削顶就是小声。
+    /// 换新线用 tools/audio-probe 的 probe 命令量一下，再回来加一行。
+    /// </summary>
+    private static double CompensationFor(string driverName)
+    {
+        if (driverName.Contains("Steam Streaming", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0.0316; // 实测 +30dB
+        }
+        return 1.0; // VB-CABLE 等实测单位增益
+    }
     private const int AlignmentBlockMs = 5;
     private const int MeterIntervalMs = 100;
     private const int LogLimit = 200;
@@ -27,8 +39,10 @@ public sealed class AudioEngine : IAudioEngine
     private const int MicrophoneLatencyMs = 10;
     /// <summary>源缓冲涨到这个深度就说明两边时钟漂了，直接跳到最新数据，避免延迟越积越大。</summary>
     private const int MaxSourceBufferedMs = 150;
-    /// <summary>噪声门：麦克风原始电平低于这个值就当底噪，直接送静音，别让大增益把它一起放大（约 -55dB）。</summary>
-    private const double MicrophoneGateRms = 0.0018;
+    /// <summary>噪声门开门阈值（约 -51dB）：说话电平要高于它才放行。</summary>
+    private const double MicrophoneGateOpenRms = 0.0028;
+    /// <summary>噪声门关门阈值（约 -61dB）：留 10dB 回差，免得电平卡在阈值附近时门反复开关发出怪声。</summary>
+    private const double MicrophoneGateCloseRms = 0.0009;
     /// <summary>门打开后的保持时间，避免说话换气的间隙被切掉。</summary>
     private const int MicrophoneGateHoldMs = 250;
     /// <summary>自动增益的目标：说话时送到虚拟线里的 RMS（约 -26dB）。</summary>
@@ -53,6 +67,7 @@ public sealed class AudioEngine : IAudioEngine
     private MasterWaveProvider? masterProvider;
 
     private double musicGain = 1.0;
+    private double cableCompensation = 1.0;
     private double microphoneGain = 1.0;
     private double autoGain = 1.0;
     private double speechSumSquares;
@@ -165,6 +180,7 @@ public sealed class AudioEngine : IAudioEngine
             FindDevice(DataFlow.Render, options.OutputDeviceId)
             ?? throw new InvalidOperationException("找不到送队友的输出设备");
         var deviceFormat = outputDevice.AudioClient.MixFormat;
+        cableCompensation = CompensationFor(outputDevice.DeviceFriendlyName);
         var mixFormat = WaveFormat.CreateIeeeFloatWaveFormat(
             deviceFormat.SampleRate,
             deviceFormat.Channels
@@ -240,7 +256,11 @@ public sealed class AudioEngine : IAudioEngine
         masterOutput.Play();
 
         IsRunning = true;
-        Log($"通路已建立：混音 → {outputDevice.FriendlyName}（已按 -30dB 补偿虚拟线增益）");
+        Log(
+            $"通路已建立：混音 → {outputDevice.FriendlyName}"
+                + $"（线路增益补偿 {20 * Math.Log10(cableCompensation):F1}dB，"
+                + $"送出规格 {deviceFormat.SampleRate}Hz/{deviceFormat.Channels}ch）"
+        );
         RaiseChanged();
     }
 
@@ -325,7 +345,7 @@ public sealed class AudioEngine : IAudioEngine
         var level = Level(eventArgs.Buffer, buffer.WaveFormat, eventArgs.BytesRecorded);
         microphoneLevel = level * EffectiveMicrophoneGain;
 
-        if (level >= MicrophoneGateRms)
+        if (level >= MicrophoneGateOpenRms)
         {
             // 只统计说话那部分，静音段不参与，否则自动增益会把"会说"当成"很轻"
             var samples = eventArgs.BytesRecorded / 4;
@@ -333,11 +353,14 @@ public sealed class AudioEngine : IAudioEngine
             speechSamples += samples;
         }
 
-        if (level >= MicrophoneGateRms)
+        var gateOpen = DateTime.UtcNow < gateOpenUntil;
+        if (level >= (gateOpen ? MicrophoneGateCloseRms : MicrophoneGateOpenRms))
         {
+            // 回差 + 保持时间：门一旦开了，要掉到更低的值并持续一段时间才关
             gateOpenUntil = DateTime.UtcNow.AddMilliseconds(MicrophoneGateHoldMs);
+            gateOpen = true;
         }
-        if (DateTime.UtcNow >= gateOpenUntil)
+        if (!gateOpen)
         {
             // 底噪，门关着：送等长静音，别把噪声放大以后塞给队友
             if (gateSilence.Length < eventArgs.BytesRecorded)
@@ -373,7 +396,7 @@ public sealed class AudioEngine : IAudioEngine
         {
             var magnitude = Math.Abs(samples[index]);
             if (magnitude > peak) peak = magnitude;
-            samples[index] *= (float)CableCompensation;
+            samples[index] *= (float)cableCompensation;
         }
         outputPeak = peak;
         clipping = peak >= 0.99;

@@ -40,16 +40,21 @@ namespace SoundConnect.WinUI
         private static async Task RunSelfTestAsync()
         {
             var report = new List<string>();
+            IAudioEngine? engine = null;
             try
             {
                 var mauiApp = MauiProgram.CreateMauiApp();
-                var engine = mauiApp.Services.GetRequiredService<IAudioEngine>();
+                engine = mauiApp.Services.GetRequiredService<IAudioEngine>();
                 await engine.RefreshDevicesAsync();
 
                 var output =
                     engine.RenderDevices.FirstOrDefault(device =>
+                        device.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase)
+                    )
+                    ?? engine.RenderDevices.FirstOrDefault(device =>
                         device.Name.Contains("Steam Streaming Microphone", StringComparison.OrdinalIgnoreCase)
-                    ) ?? engine.RenderDevices.FirstOrDefault(device => device.IsVirtual);
+                    )
+                    ?? engine.RenderDevices.FirstOrDefault(device => device.IsVirtual);
                 var microphone = engine.CaptureDevices.FirstOrDefault(device => !device.IsVirtual);
                 var processes = await engine.ListAudioProcessesAsync();
                 string[] players = ["QQMusic", "cloudmusic", "msedge", "chrome", "firefox", "Spotify"];
@@ -91,6 +96,8 @@ namespace SoundConnect.WinUI
                 report.Add($"自检异常：{error}");
             }
 
+            report.Add("--- 引擎日志 ---");
+            report.AddRange(engine?.Snapshot.Log ?? []);
             var logPath = Path.Combine(AppContext.BaseDirectory, "selftest.log");
             await File.WriteAllLinesAsync(logPath, report);
             Console.WriteLine(string.Join(Environment.NewLine, report));

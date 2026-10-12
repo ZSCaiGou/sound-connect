@@ -1,8 +1,10 @@
-node_modules
-dist
-out
-.DS_Store
-.eslintcache
-*.log*
+# .NET 构建产物
 bin
 obj
+.vs
+*.user
+*.suo
+
+# 杂项
+*.log*
+.DS_Store

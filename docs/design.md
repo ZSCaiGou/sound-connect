@@ -5,6 +5,9 @@
 个人自用的 Windows 桌面工具：把音效和你正在听的音乐送进语音软件，让队友听见。
 不对外分发，因此不处理驱动签名、自动更新、安装包体积和跨平台打包。
 
+技术栈：.NET 10 + MAUI Blazor Hybrid（界面用 Blazor，音频走原生 WASAPI，同进程无 IPC）。
+早期的 Electron 原型已废弃，代码保留在 `legacy-electron` 标签里。
+
 ## 三条硬约束
 
 这三条决定了整个架构，都是实测或平台事实，不是选型偏好：
@@ -62,18 +65,21 @@ Discord 播放 → 你的耳机：不经过任何被采集的线，所以没有�
 ## 代码结构
 
 ```text
+SoundConnect/                      MAUI Blazor Hybrid 宿主：窗口、托盘、全局热键、应用生命周期
+SoundConnect.Shared/               Blazor 界面（Razor 组件），与宿主同进程，直接调用 C# 服务
 tools/audio-probe/                 C# 探针：虚拟线自检（是不是回环）+ 往返延迟实测
-tools/process-capture/             C# 采集器：进程级回环采集，把指定进程的声音渲染到虚拟线（待写）
-src/main/index.ts                  窗口、全局热键、spawn 采集器、控制通道、设置持久化
-src/preload/index.ts               contextBridge 暴露的 IPC 接口
-src/renderer/src/audio/
-  types.ts                         通道、设备、电平、日志的类型
-  devices.ts                       设备枚举与虚拟设备识别
-  engine.ts                        音频引擎：混音图、双输出、音效池、电平与诊断
-src/renderer/src/spike/            验证原型界面（验收后拆除）
 ```
 
-采集器由主进程 spawn，用一个本地通道（命名管道或标准输入输出）做控制：切换目标进程、调音乐音量、静音、上报电平。这样音乐电平表和"一句话把音乐压下去"的热键都有地方挂。
+音频部分做成 SoundConnect 内部的服务，没有独立进程，也就没有控制通道要设计：
+
+```text
+AudioCaptureService      WASAPI 进程回环采集，抓指定进程的声音
+AudioRenderService       把采集到的音乐按增益渲染到虚拟线的输出端
+MixerService             麦克风 + 音效混音，输出到虚拟线（队友）和物理耳机（本地监听）
+DeviceService            设备枚举、虚拟线自检、虚拟设备识别
+```
+
+音效库扫描、全局热键、电平与诊断都挂在宿主这一侧，Blazor 界面直接调。
 
 ## 验证清单
 
@@ -85,7 +91,8 @@ src/renderer/src/spike/            验证原型界面（验收后拆除）
 
 ## 阶段划分
 
-- 阶段一：`tools/audio-probe` 探针 ✅
-- 阶段二：`tools/process-capture` 采集器，命令行跑通（验证清单 2、3、5）
-- 阶段三：接进 Electron，主进程 spawn 采集器，验证原型打通全链路
-- 阶段四：音效库、全局热键、正式界面
+- 阶段一：`tools/audio-probe` 探针，选定虚拟线 ✅
+- 阶段二：仓库切到 .NET 10 + MAUI Blazor Hybrid，Electron 原型删除 ✅
+- 阶段三：音频服务（进程回环采集 + 混音 + 双输出），跑通验证清单 2、3、5
+- 阶段四：Blazor 界面（音效库、电平、推子、首次启动引导）
+- 阶段五：全局热键、托盘、开机自启

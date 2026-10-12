@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SoundConnect.Shared/SoundConnect.Shared.csproj" />
+  <Project Path="SoundConnect/SoundConnect.csproj" />
+</Solution>

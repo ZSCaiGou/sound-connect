@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, desktopCapturer, session, clipboard } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -6,8 +6,8 @@ import icon from '../../resources/icon.png?asset'
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1100,
+    height: 800,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -49,8 +49,36 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  // 系统音频回环采集：渲染进程调用 getDisplayMedia 时由主进程决定采什么。
+  // 在 Windows 上 audio: 'loopback' 表示采集系统默认播放设备的整路声音。
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (_request, callback) => {
+      desktopCapturer
+        .getSources({ types: ['screen'] })
+        .then((sources) => {
+          if (sources.length === 0) {
+            callback({})
+            return
+          }
+          callback({ video: sources[0], audio: 'loopback' })
+        })
+        .catch((error) => {
+          console.error('获取屏幕源失败', error)
+          callback({})
+        })
+    },
+    { useSystemPicker: false }
+  )
+
+  // 旧接口兜底需要的屏幕源列表
+  ipcMain.handle('desktop:sources', async () => {
+    const sources = await desktopCapturer.getSources({ types: ['screen'] })
+    return sources.map((source) => ({ id: source.id, name: source.name }))
+  })
+
+  ipcMain.handle('clipboard:write', (_event, text: unknown) => {
+    clipboard.writeText(String(text))
+  })
 
   createWindow()
 

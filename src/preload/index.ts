@@ -1,8 +1,12 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
-const api = {}
+const api = {
+  getDesktopSources: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('desktop:sources'),
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text)
+}
 
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise

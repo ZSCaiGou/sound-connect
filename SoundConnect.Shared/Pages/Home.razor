@@ -3,145 +3,151 @@
 @inject IAudioEngine Engine
 @implements IDisposable
 
-<PageTitle>音频通路</PageTitle>
+<PageTitle>共享音乐</PageTitle>
 
-<h1 class="mb-3">音频通路</h1>
-
-<div class="card mb-3">
-    <div class="card-body">
-        <div class="row g-3">
-            <div class="col-md-3">
-                <label class="form-label">音乐来源</label>
-                <select class="form-select" @bind="musicProcessId">
-                    <option value="0">（不采集音乐）</option>
-                    @foreach (var item in processes)
-                    {
-                        <option value="@item.ProcessId">@item.Name · PID @item.ProcessId · @item.State</option>
-                    }
-                </select>
-                <div class="form-text">只抓这个进程的声音，其他程序一概不碰。</div>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label">麦克风</label>
-                <select class="form-select" @bind="microphoneId">
-                    <option value="">（不用麦克风）</option>
-                    @foreach (var device in Engine.CaptureDevices)
-                    {
-                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
-                    }
-                </select>
-                <div class="form-text">要选真实麦克风，别选虚拟线。</div>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label">送队友</label>
-                <select class="form-select" @bind="outputId">
-                    <option value="">（系统默认，勿选）</option>
-                    @foreach (var device in Engine.RenderDevices)
-                    {
-                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
-                    }
-                </select>
-                <div class="form-text">选虚拟线，Discord 的输入设备要指向同一条线的录音端。</div>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label">本地监听</label>
-                <select class="form-select" @bind="monitorId">
-                    <option value="">（不监听）</option>
-                    @foreach (var device in Engine.RenderDevices)
-                    {
-                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
-                    }
-                </select>
-                <div class="form-text">选你的耳机，用来听自己触发的音效。</div>
-            </div>
-        </div>
-
-        <div class="d-flex gap-2 mt-3">
-            <button class="btn btn-primary" @onclick="OnStart" disabled="@(busy || Engine.IsRunning)">建立通路</button>
-            <button class="btn btn-outline-danger" @onclick="OnStop" disabled="@(!Engine.IsRunning)">停止</button>
-            <button class="btn btn-outline-secondary" @onclick="OnRefresh">刷新设备与进程</button>
-            <button class="btn btn-outline-secondary" @onclick="OnScanEffects">扫描音效</button>
-        </div>
-
-        @if (!string.IsNullOrEmpty(message))
+<div class="app-head">
+    <div class="app-title">
+        <h1>共享音乐</h1>
+        <span>把你正在听的歌，连同你的声音，一起送进语音软件</span>
+    </div>
+    <div class="head-actions">
+        <span class="status-pill @(snapshot.IsRunning ? "live" : "")">
+            <span class="dot"></span>@(snapshot.IsRunning ? "正在共享" : "未开启")
+        </span>
+        @if (snapshot.IsRunning)
         {
-            <div class="alert alert-warning mt-3 mb-0 py-2">@message</div>
+            <button class="btn btn-outline-danger" @onclick="OnStop">停止共享</button>
+        }
+        else
+        {
+            <button class="btn btn-primary" @onclick="OnStart" disabled="@busy">
+                @(busy ? "正在建立…" : "开始共享")
+            </button>
         }
     </div>
 </div>
 
-<div class="card mb-3">
+@if (!string.IsNullOrEmpty(message))
+{
+    <div class="alert">@message</div>
+}
+
+<div class="card">
     <div class="card-body">
-        <h2 class="h5 mb-3">电平</h2>
+        <h2>来源与输出</h2>
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label">音乐来源</label>
+                <select class="form-select" @bind="musicProcessId">
+                    <option value="0">（不共享音乐）</option>
+                    @foreach (var item in processes)
+                    {
+                        <option value="@item.ProcessId">
+                            @item.Name@(item.State == "正在发声" ? "（正在发声）" : "")
+                        </option>
+                    }
+                </select>
+                <div class="form-text">只抓这个程序的声音，其他程序一概不受影响。</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">你的麦克风</label>
+                <select class="form-select" @bind="microphoneId">
+                    <option value="">（只共享音乐）</option>
+                    @foreach (var device in Engine.CaptureDevices)
+                    {
+                        <option value="@device.Id">@device.Name</option>
+                    }
+                </select>
+                <div class="form-text">选你真实的麦克风，别选虚拟设备。</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">送到哪条线</label>
+                <select class="form-select" @bind="outputId">
+                    @foreach (var device in Engine.RenderDevices)
+                    {
+                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
+                    }
+                </select>
+                <div class="form-text">语音软件的输入设备要选同一条线的录音端。</div>
+            </div>
+        </div>
+        <div class="mt-3">
+            <button class="btn btn-outline-secondary btn-sm" @onclick="OnRefresh">刷新设备与程序</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h2>电平</h2>
         @foreach (var meter in Meters)
         {
-            <div class="d-flex align-items-center gap-2 mb-2">
-                <span style="width:90px">@meter.Label</span>
-                <div class="progress flex-grow-1" style="height:8px">
-                    <div class="progress-bar" style="width:@(Percent(meter.Value))%"></div>
+            <div class="meter">
+                <span class="meter-label">@meter.Label</span>
+                <div class="meter-track">
+                    <div class="meter-fill @(meter.Value > 0.5 ? "hot" : "")"
+                         style="width:@Percent(meter.Value)%"></div>
                 </div>
-                <span style="width:70px;text-align:right">@ToDb(meter.Value)</span>
+                <span class="meter-value">@ToDb(meter.Value)</span>
             </div>
         }
 
         @if (snapshot.IsClipping)
         {
-            <div class="alert alert-danger py-2 mb-0">
-                输出削顶了（峰值 @ToDb(snapshot.OutputPeak)），把音乐或麦克风音量往下调一点。
-            </div>
+            <div class="alert mt-3 mb-0">音量过大、已经削顶了，把音乐或麦克风音量往下调一点。</div>
         }
 
-        <div class="form-text">
-            队友收到的信号（从虚拟线录音端实测）：电平 @ToDb(snapshot.SentLevel) /
-            峰值 @ToDb(snapshot.SentPeak) / 每秒削顶 @snapshot.SentClipSamples 个采样。
-            削顶一直是 0、峰值在 -6dB 以下，就是干净的。
+        <hr style="border-color:var(--line);opacity:0.6;margin:18px 0" />
+
+        <div class="gain-row">
+            <span class="hint-inline">音乐音量</span>
+            <input type="range" class="form-range" min="-20" max="20" step="1"
+                   value="@musicGainDb" @onchange="OnMusicGainChanged" />
+            <span class="gain-value">@musicGainDb.ToString("F0") dB</span>
+        </div>
+        <div class="gain-row">
+            <span class="hint-inline">麦克风音量</span>
+            <input type="range" class="form-range" min="-20" max="40" step="1"
+                   value="@microphoneGainDb" @onchange="OnMicrophoneGainChanged" />
+            <span class="gain-value">@microphoneGainDb.ToString("F0") dB</span>
         </div>
 
-        <div class="form-text">
-            欠载计数（每秒）：音乐 @snapshot.MusicUnderruns 次 / 麦克风 @snapshot.MicrophoneUnderruns 次。
-            稳定在 0 表示音频连续；一直是正数说明有卡顿。
-        </div>
-
-        <hr />
-
-        <div class="row g-3">
-            <div class="col-md-6">
-                <label class="form-label">音乐音量 @musicGainDb.ToString("F0") dB</label>
-                <input type="range" class="form-range" min="-20" max="20" step="1"
-                       value="@musicGainDb" @onchange="OnMusicGainChanged" />
-            </div>
-            <div class="col-md-6">
-                <label class="form-label">麦克风音量 @microphoneGainDb.ToString("F0") dB</label>
-                <input type="range" class="form-range" min="-20" max="40" step="1"
-                       value="@microphoneGainDb" @onchange="OnMicrophoneGainChanged" />
-            </div>
-        </div>
-        <label class="inline mt-2">
+        <label class="hint-inline d-flex align-items-center gap-2 mt-3">
             <input type="checkbox" checked="@Engine.AutoGainEnabled" @onchange="OnAutoGainChanged" />
-            麦克风自动增益（自动部分当前 @snapshot.AutoGainDb.ToString("F1") dB）
+            麦克风自动增益（现在自动加了 @snapshot.AutoGainDb.ToString("F1") dB，轻声说话也能被听清）
         </label>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h2>对方听到的效果<span class="sub">从线里实测，不是估算</span></h2>
+        <div class="chips">
+            <span class="chip @(snapshot.IsClipping ? "bad" : "ok")">
+                削顶 @(snapshot.IsClipping ? "有" : "无")
+            </span>
+            <span class="chip">响度 @ToDb(snapshot.SentLevel)</span>
+            <span class="chip">峰值 @ToDb(snapshot.SentPeak)</span>
+            <span class="chip @(snapshot.MusicUnderruns + snapshot.MicrophoneUnderruns == 0 ? "ok" : "bad")">
+                断续 @(snapshot.MusicUnderruns + snapshot.MicrophoneUnderruns) 次/秒
+            </span>
+        </div>
         <div class="form-text">
-            0 dB 表示原样送出（虚拟线的 +30dB 已经补偿掉了），可加到 +40dB。
-            自动增益按你说话的电平自己调，手动推子是在它之上再叠一层。电平表显示的就是队友实际听到的响度。
+            削顶为"无"、断续为 0 就是干净的；峰值贴着 0dB 时把音量往下调一点。
         </div>
     </div>
 </div>
 
-<div class="card mb-3">
-    <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center">
-            <h2 class="h5 mb-0">音效</h2>
-            <span class="form-text mb-0">
-                共 @snapshot.Effects.Count 个　正在播 @snapshot.ActiveEffects 个
-            </span>
-        </div>
+<details>
+    <summary>音效（暂时用不上可以不管）</summary>
+    <div class="details-body">
         <div class="form-text mb-2">
-            把音频文件丢进 <code>@snapshot.EffectFolder</code>，再点上面的「扫描音效」；文件名就是音效名。
+            把音频文件丢进 <code>@snapshot.EffectFolder</code>，点下面的「扫描音效」，文件名就是音效名。
         </div>
-        <div class="d-flex flex-wrap gap-2">
+        <div class="effect-grid mb-3">
             @foreach (var effect in snapshot.Effects)
             {
-                <button class="btn btn-outline-primary" disabled="@(!Engine.IsRunning)"
+                <button class="btn btn-outline-primary btn-sm" disabled="@(!Engine.IsRunning)"
                         @onclick="() => Engine.TriggerEffect(effect.Name)">
                     ▶ @effect.Name
                 </button>
@@ -151,21 +157,22 @@
                 <span class="form-text">还没扫描过音效。</span>
             }
         </div>
-        <div class="d-flex align-items-center gap-3 mt-3">
-            <span class="form-text mb-0">音效音量 @effectsGainDb.ToString("F0") dB</span>
-            <input type="range" class="form-range" style="max-width:240px" min="-20" max="20" step="1"
+        <div class="d-flex align-items-center gap-3">
+            <button class="btn btn-outline-secondary btn-sm" @onclick="OnScanEffects">扫描音效</button>
+            <span class="hint-inline">音效音量 @effectsGainDb.ToString("F0") dB</span>
+            <input type="range" class="form-range" style="max-width:200px" min="-20" max="20" step="1"
                    value="@effectsGainDb" @onchange="OnEffectsGainChanged" />
-            <button class="btn btn-outline-danger btn-sm" @onclick="OnStopEffects">停止全部音效</button>
+            <button class="btn btn-outline-danger btn-sm" @onclick="OnStopEffects">全部停止</button>
         </div>
     </div>
-</div>
+</details>
 
-<div class="card">
-    <div class="card-body">
-        <h2 class="h5">日志</h2>
-        <pre class="mb-0" style="max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap">@string.Join(Environment.NewLine, snapshot.Log)</pre>
+<details>
+    <summary>诊断日志</summary>
+    <div class="details-body">
+        <pre class="log">@string.Join(Environment.NewLine, snapshot.Log)</pre>
     </div>
-</div>
+</details>
 
 @code {
     private sealed record MeterRow(string Label, double Value);
@@ -175,7 +182,6 @@
     private int musicProcessId;
     private string microphoneId = string.Empty;
     private string outputId = string.Empty;
-    private string monitorId = string.Empty;
     private double musicGainDb;
     private double microphoneGainDb;
     private double effectsGainDb = -1;
@@ -186,7 +192,7 @@
     [
         new("音乐", snapshot.MusicLevel),
         new("麦克风", snapshot.MicrophoneLevel),
-        new("总输出", snapshot.OutputLevel)
+        new("送出去", snapshot.OutputLevel)
     ];
 
     protected override async Task OnInitializedAsync()
@@ -233,13 +239,13 @@
         StateHasChanged();
     }
 
+    /// <summary>优先选 VB-CABLE（实测单位增益、48k 立体声），其次是实测过的 Steam 那条。</summary>
     private string PickOutputDevice()
     {
         if (Engine.RenderDevices.Any(device => device.Id == outputId))
         {
             return outputId;
         }
-        // 优先选 VB-CABLE（实测单位增益、48k 立体声），其次是实测过的 Steam 那条
         var verified = Engine.RenderDevices.FirstOrDefault(device =>
             device.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase)
         );
@@ -272,12 +278,12 @@
         try
         {
             await Engine.StartAsync(
-                new AudioStartOptions(musicProcessId, microphoneId, outputId, monitorId)
+                new AudioStartOptions(musicProcessId, microphoneId, outputId, string.Empty)
             );
         }
         catch (Exception error)
         {
-            message = $"建立通路失败：{error.Message}";
+            message = $"开始共享失败：{error.Message}";
         }
         finally
         {
@@ -310,11 +316,6 @@
         }
     }
 
-    private void OnAutoGainChanged(ChangeEventArgs args)
-    {
-        Engine.AutoGainEnabled = args.Value is true;
-    }
-
     private void OnEffectsGainChanged(ChangeEventArgs args)
     {
         if (double.TryParse(args.Value?.ToString(), out var decibels))
@@ -322,6 +323,11 @@
             effectsGainDb = decibels;
             Engine.SetGain("effect", Math.Pow(10, decibels / 20));
         }
+    }
+
+    private void OnAutoGainChanged(ChangeEventArgs args)
+    {
+        Engine.AutoGainEnabled = args.Value is true;
     }
 
     private async Task OnScanEffects()
@@ -337,12 +343,15 @@
 
     private static double ToGainDb(double linear)
     {
-        return linear <= 0.0001 ? -20 : Math.Clamp(20 * Math.Log10(linear), -20, 20);
+        return linear <= 0.0001 ? -20 : Math.Clamp(20 * Math.Log10(linear), -20, 40);
     }
 
+    /// <summary>电平条按 dB 画：-60dB 是空，0dB 是满，这样看起来才有意义。</summary>
     private static int Percent(double value)
     {
-        return (int)Math.Clamp(value * 260, 0, 100);
+        if (value <= 0.000001) return 0;
+        var decibels = 20 * Math.Log10(value);
+        return (int)Math.Clamp((decibels + 60) / 60 * 100, 0, 100);
     }
 
     private static string ToDb(double value)

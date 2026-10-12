@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>SoundConnect 界面预览</title>
+  <!--
+    这份文件只是拿来在浏览器里快速预览样式的静态副本：
+    改了 SoundConnect.Shared/Pages/Home.razor 或 SoundConnect/wwwroot/app.css 之后，
+    照着同步一下这里的结构和 class，就能截图看效果，不用启动应用。
+  -->
+  <link rel="stylesheet" href="../../SoundConnect.Shared/wwwroot/lib/bootstrap/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="../../SoundConnect/wwwroot/app.css" />
+</head>
+<body>
+  <div class="page">
+    <div class="app-head">
+      <div class="app-title">
+        <h1>共享音乐</h1>
+        <span>把你正在听的歌，连同你的声音，一起送进语音软件</span>
+      </div>
+      <div class="head-actions">
+        <span class="status-pill live"><span class="dot"></span>正在共享</span>
+        <button class="btn btn-outline-danger">停止共享</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <h2>来源与输出</h2>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label">音乐来源</label>
+            <select class="form-select">
+              <option>QQMusic（正在发声）</option>
+              <option>msedge（正在发声）</option>
+            </select>
+            <div class="form-text">只抓这个程序的声音，其他程序一概不受影响。</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">你的麦克风</label>
+            <select class="form-select"><option>麦克风 (HECATE G30)</option></select>
+            <div class="form-text">选你真实的麦克风，别选虚拟设备。</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">送到哪条线</label>
+            <select class="form-select"><option>◆ CABLE Input (VB-Audio Virtual Cable)</option></select>
+            <div class="form-text">语音软件的输入设备要选同一条线的录音端。</div>
+          </div>
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-outline-secondary btn-sm">刷新设备与程序</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <h2>电平</h2>
+        <div class="meter">
+          <span class="meter-label">音乐</span>
+          <div class="meter-track"><div class="meter-fill" style="width:72%"></div></div>
+          <span class="meter-value">-19 dB</span>
+        </div>
+        <div class="meter">
+          <span class="meter-label">麦克风</span>
+          <div class="meter-track"><div class="meter-fill" style="width:54%"></div></div>
+          <span class="meter-value">-28 dB</span>
+        </div>
+        <div class="meter">
+          <span class="meter-label">送出去</span>
+          <div class="meter-track"><div class="meter-fill hot" style="width:88%"></div></div>
+          <span class="meter-value">-7 dB</span>
+        </div>
+
+        <hr style="border-color:var(--line);opacity:0.6;margin:18px 0" />
+
+        <div class="gain-row">
+          <span class="hint-inline">音乐音量</span>
+          <input type="range" class="form-range" min="-20" max="20" value="0" />
+          <span class="gain-value">0 dB</span>
+        </div>
+        <div class="gain-row">
+          <span class="hint-inline">麦克风音量</span>
+          <input type="range" class="form-range" min="-20" max="40" value="12" />
+          <span class="gain-value">12 dB</span>
+        </div>
+
+        <label class="hint-inline d-flex align-items-center gap-2 mt-3">
+          <input type="checkbox" checked />
+          麦克风自动增益（现在自动加了 8.4 dB，轻声说话也能被听清）
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <h2>对方听到的效果<span class="sub">从线里实测，不是估算</span></h2>
+        <div class="chips">
+          <span class="chip ok">削顶 无</span>
+          <span class="chip">响度 -29 dB</span>
+          <span class="chip">峰值 -7 dB</span>
+          <span class="chip ok">断续 0 次/秒</span>
+        </div>
+        <div class="form-text">削顶为"无"、断续为 0 就是干净的；峰值贴着 0dB 时把音量往下调一点。</div>
+      </div>
+    </div>
+
+    <details>
+      <summary>音效（暂时用不上可以不管）</summary>
+      <div class="details-body">
+        <div class="form-text mb-2">
+          把音频文件丢进 <code>C:\Users\CaiGou\Music\sound-connect</code>，点下面的「扫描音效」，文件名就是音效名。
+        </div>
+        <div class="effect-grid mb-3">
+          <button class="btn btn-outline-primary btn-sm">▶ 测试音 1kHz</button>
+          <button class="btn btn-outline-primary btn-sm">▶ 掌声</button>
+          <button class="btn btn-outline-primary btn-sm">▶ 笑</button>
+        </div>
+        <div class="d-flex align-items-center gap-3">
+          <button class="btn btn-outline-secondary btn-sm">扫描音效</button>
+          <span class="hint-inline">音效音量 -1 dB</span>
+          <input type="range" class="form-range" style="max-width:200px" min="-20" max="20" value="-1" />
+          <button class="btn btn-outline-danger btn-sm">全部停止</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>诊断日志</summary>
+      <div class="details-body">
+        <pre class="log">[03:23:12] 开始采集 QQMusic（PID 14148）的声音
+[03:23:12] 麦克风已接入：麦克风 (HECATE G30)（48000Hz/2ch/32bit）
+[03:23:13] 线路监测已接入：CABLE Output (VB-Audio Virtual Cable)
+[03:23:13] 通路已建立：混音 → CABLE Input (VB-Audio Virtual Cable)（线路增益补偿 0.0dB，送出规格 48000Hz/2ch）</pre>
+      </div>
+    </details>
+  </div>
+</body>
+</html>

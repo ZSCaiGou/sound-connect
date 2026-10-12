@@ -57,6 +57,7 @@ SoundConnect.Shared/     Blazor 界面（Razor 组件库）
 tools/audio-probe/       虚拟线探针：判断一对设备是不是回环，并量出往返延迟
 tools/process-capture/   进程回环采集器原型：抓指定进程的声音渲染进虚拟线
 docs/design.md           设计方案：数据通路、设备选型、验证清单
+tools/ui-preview/        界面样式预览：一份静态副本 + 无头 Edge 截图，改样式不用启动应用
 ```
 
 ## 历史

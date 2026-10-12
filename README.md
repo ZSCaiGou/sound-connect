@@ -44,6 +44,7 @@ dotnet run --project tools/audio-probe -- probe --render "名称" --capture "名
 # 把某个进程的声音抓出来送进虚拟线（QQ 音乐正在放歌时可以用）
 dotnet run --project tools/process-capture -- list
 dotnet run --project tools/process-capture -- capture --process QQMusic --render 0
+dotnet run --project tools/process-capture -- capture --process msedge --render 0
 ```
 
 ## 目录结构

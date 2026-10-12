@@ -186,7 +186,7 @@ internal static class Program
         var pidText = options.GetValueOrDefault("pid");
         if (uint.TryParse(pidText, out var pid))
         {
-            return Process.GetProcessById((int)pid);
+            return ToTreeRoot(Process.GetProcessById((int)pid));
         }
 
         var name = options.GetValueOrDefault("process");
@@ -200,7 +200,22 @@ internal static class Program
         {
             throw new ArgumentException($"没有找到进程「{name}」");
         }
-        return matches[0];
+        return ToTreeRoot(matches[0]);
+    }
+
+    private static Process ToTreeRoot(Process process)
+    {
+        var rootId = ProcessTree.FindTreeRoot((uint)process.Id, process.ProcessName);
+        if (rootId == (uint)process.Id)
+        {
+            return process;
+        }
+
+        Console.WriteLine(
+            $"PID {process.Id} 是子进程，已上溯到进程树根 PID {rootId}"
+            + "（浏览器会回收音频服务子进程，抓树根才不会中途断流）"
+        );
+        return Process.GetProcessById((int)rootId);
     }
 
     private static MMDevice ResolveRenderDevice(MMDeviceEnumerator enumerator, string? selector)

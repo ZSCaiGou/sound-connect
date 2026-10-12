@@ -10,7 +10,7 @@
 <div class="card mb-3">
     <div class="card-body">
         <div class="row g-3">
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <label class="form-label">音乐来源</label>
                 <select class="form-select" @bind="musicProcessId">
                     <option value="0">（不采集音乐）</option>
@@ -21,7 +21,7 @@
                 </select>
                 <div class="form-text">只抓这个进程的声音，其他程序一概不碰。</div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <label class="form-label">麦克风</label>
                 <select class="form-select" @bind="microphoneId">
                     <option value="">（不用麦克风）</option>
@@ -32,7 +32,7 @@
                 </select>
                 <div class="form-text">要选真实麦克风，别选虚拟线。</div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <label class="form-label">送队友</label>
                 <select class="form-select" @bind="outputId">
                     <option value="">（系统默认，勿选）</option>
@@ -43,12 +43,24 @@
                 </select>
                 <div class="form-text">选虚拟线，Discord 的输入设备要指向同一条线的录音端。</div>
             </div>
+            <div class="col-md-3">
+                <label class="form-label">本地监听</label>
+                <select class="form-select" @bind="monitorId">
+                    <option value="">（不监听）</option>
+                    @foreach (var device in Engine.RenderDevices)
+                    {
+                        <option value="@device.Id">@(device.IsVirtual ? "◆ " : "")@device.Name</option>
+                    }
+                </select>
+                <div class="form-text">选你的耳机，用来听自己触发的音效。</div>
+            </div>
         </div>
 
         <div class="d-flex gap-2 mt-3">
             <button class="btn btn-primary" @onclick="OnStart" disabled="@(busy || Engine.IsRunning)">建立通路</button>
             <button class="btn btn-outline-danger" @onclick="OnStop" disabled="@(!Engine.IsRunning)">停止</button>
             <button class="btn btn-outline-secondary" @onclick="OnRefresh">刷新设备与进程</button>
+            <button class="btn btn-outline-secondary" @onclick="OnScanEffects">扫描音效</button>
         </div>
 
         @if (!string.IsNullOrEmpty(message))
@@ -115,6 +127,39 @@
     </div>
 </div>
 
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">音效</h2>
+            <span class="form-text mb-0">
+                共 @snapshot.Effects.Count 个　正在播 @snapshot.ActiveEffects 个
+            </span>
+        </div>
+        <div class="form-text mb-2">
+            把音频文件丢进 <code>@snapshot.EffectFolder</code>，再点上面的「扫描音效」；文件名就是音效名。
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            @foreach (var effect in snapshot.Effects)
+            {
+                <button class="btn btn-outline-primary" disabled="@(!Engine.IsRunning)"
+                        @onclick="() => Engine.TriggerEffect(effect.Name)">
+                    ▶ @effect.Name
+                </button>
+            }
+            @if (snapshot.Effects.Count == 0)
+            {
+                <span class="form-text">还没扫描过音效。</span>
+            }
+        </div>
+        <div class="d-flex align-items-center gap-3 mt-3">
+            <span class="form-text mb-0">音效音量 @effectsGainDb.ToString("F0") dB</span>
+            <input type="range" class="form-range" style="max-width:240px" min="-20" max="20" step="1"
+                   value="@effectsGainDb" @onchange="OnEffectsGainChanged" />
+            <button class="btn btn-outline-danger btn-sm" @onclick="OnStopEffects">停止全部音效</button>
+        </div>
+    </div>
+</div>
+
 <div class="card">
     <div class="card-body">
         <h2 class="h5">日志</h2>
@@ -130,8 +175,10 @@
     private int musicProcessId;
     private string microphoneId = string.Empty;
     private string outputId = string.Empty;
+    private string monitorId = string.Empty;
     private double musicGainDb;
     private double microphoneGainDb;
+    private double effectsGainDb = -1;
     private bool busy;
     private string message = string.Empty;
 
@@ -146,6 +193,7 @@
     {
         Engine.Changed += OnEngineChanged;
         await RefreshAsync();
+        await Engine.ScanEffectsAsync(null);
     }
 
     public void Dispose()
@@ -160,6 +208,7 @@
             snapshot = Engine.Snapshot;
             musicGainDb = ToGainDb(snapshot.MusicGain);
             microphoneGainDb = ToGainDb(snapshot.MicrophoneGain);
+            effectsGainDb = ToGainDb(snapshot.EffectsGain);
             StateHasChanged();
         });
     }
@@ -222,7 +271,9 @@
         message = string.Empty;
         try
         {
-            await Engine.StartAsync(new AudioStartOptions(musicProcessId, microphoneId, outputId));
+            await Engine.StartAsync(
+                new AudioStartOptions(musicProcessId, microphoneId, outputId, monitorId)
+            );
         }
         catch (Exception error)
         {
@@ -262,6 +313,26 @@
     private void OnAutoGainChanged(ChangeEventArgs args)
     {
         Engine.AutoGainEnabled = args.Value is true;
+    }
+
+    private void OnEffectsGainChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var decibels))
+        {
+            effectsGainDb = decibels;
+            Engine.SetGain("effect", Math.Pow(10, decibels / 20));
+        }
+    }
+
+    private async Task OnScanEffects()
+    {
+        await Engine.ScanEffectsAsync(null);
+        snapshot = Engine.Snapshot;
+    }
+
+    private void OnStopEffects()
+    {
+        Engine.StopEffects();
     }
 
     private static double ToGainDb(double linear)

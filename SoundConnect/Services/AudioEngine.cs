@@ -69,10 +69,17 @@ public sealed class AudioEngine : IAudioEngine
     private BlockAlignedSampleProvider? microphoneAligned;
     private WasapiOut? masterOutput;
     private MasterWaveProvider? masterProvider;
+    private WasapiOut? monitorOutput;
+    private EffectMixerSampleProvider? effectsBus;
+    private EffectMixerSampleProvider? monitorBus;
+    private VolumeSampleProvider? effectsVolume;
+    private readonly EffectLibrary effectLibrary = new();
+    private IReadOnlyList<EffectInfo> effects = [];
 
     private double musicGain = 1.0;
     private double cableCompensation = 1.0;
     private double microphoneGain = 1.0;
+    private double effectsGain = 0.9;
     private double autoGain = 1.0;
     private double autoGainTarget = 1.0;
     private double speechSumSquares;
@@ -106,6 +113,14 @@ public sealed class AudioEngine : IAudioEngine
     /// <summary>手动增益乘上自动增益，就是最终送给队友的麦克风倍数。</summary>
     private double EffectiveMicrophoneGain => microphoneGain * (AutoGainEnabled ? autoGain : 1);
 
+    public IReadOnlyList<EffectInfo> Effects => effects;
+
+    public string EffectFolder => effectLibrary.Folder;
+
+    public int ActiveEffects => effectsBus?.ActiveVoices ?? 0;
+
+    public bool IsMonitoring => monitorOutput is not null;
+
     public IReadOnlyList<AudioDeviceInfo> RenderDevices { get; private set; } = [];
 
     public IReadOnlyList<AudioDeviceInfo> CaptureDevices { get; private set; } = [];
@@ -129,8 +144,13 @@ public sealed class AudioEngine : IAudioEngine
         SentLevel = sentLevel,
         SentPeak = sentPeak,
         SentClipSamples = sentClipSamples,
+        Effects = effects,
+        EffectFolder = effectLibrary.Folder,
+        ActiveEffects = ActiveEffects,
+        IsMonitoring = IsMonitoring,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
+        EffectsGain = effectsGain,
         Log = log.ToArray()
     };
 
@@ -262,6 +282,10 @@ public sealed class AudioEngine : IAudioEngine
             );
         }
 
+        effectsBus = new EffectMixerSampleProvider();
+        effectsVolume = new VolumeSampleProvider(effectsBus) { Volume = (float)effectsGain };
+        sources.Add(effectsVolume);
+
         mixer = new MixingSampleProvider(sources) { ReadFully = true };
         masterProvider = new MasterWaveProvider(this, mixer);
         masterOutput = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, OutputLatencyMs);
@@ -269,6 +293,7 @@ public sealed class AudioEngine : IAudioEngine
         masterOutput.Play();
 
         StartPartnerMonitor(outputDevice);
+        StartMonitorOutput(options.MonitorDeviceId);
 
         IsRunning = true;
         Log(
@@ -306,6 +331,12 @@ public sealed class AudioEngine : IAudioEngine
         masterOutput?.Dispose();
         masterOutput = null;
         masterProvider = null;
+        monitorOutput?.Stop();
+        monitorOutput?.Dispose();
+        monitorOutput = null;
+        monitorBus = null;
+        effectsBus = null;
+        effectsVolume = null;
         mixer = null;
         musicVolume = null;
         microphoneVolume = null;
@@ -350,11 +381,21 @@ public sealed class AudioEngine : IAudioEngine
             microphoneGain = clamped;
             if (microphoneVolume is not null) microphoneVolume.Volume = (float)clamped;
         }
+        else if (channel == "effect")
+        {
+            effectsGain = clamped;
+            if (effectsVolume is not null) effectsVolume.Volume = (float)clamped;
+        }
     }
 
     public double GetGain(string channel)
     {
-        return channel == "music" ? musicGain : microphoneGain;
+        return channel switch
+        {
+            "music" => musicGain,
+            "effect" => effectsGain,
+            _ => microphoneGain
+        };
     }
 
     private void OnMusicData(byte[] chunk)
@@ -367,6 +408,52 @@ public sealed class AudioEngine : IAudioEngine
     /// 捕获虚拟线的录音端，量"队友实际收到的信号"。
     /// 质量好不好不用再等朋友反馈：这里直接能看到电平、峰值和削顶采样数。
     /// </summary>
+    /// <summary>
+    /// 本地监听：只把音效送到你的耳机。音乐你本来就在直接听，麦克风不能监听（会听到自己）。
+    /// </summary>
+    private void StartMonitorOutput(string monitorDeviceId)
+    {
+        if (string.IsNullOrWhiteSpace(monitorDeviceId)) return;
+        var monitorDevice = FindDevice(DataFlow.Render, monitorDeviceId);
+        if (monitorDevice is null)
+        {
+            Log("找不到本地监听设备，音效只有队友能听到");
+            return;
+        }
+
+        monitorBus = new EffectMixerSampleProvider();
+        monitorOutput = new WasapiOut(monitorDevice, AudioClientShareMode.Shared, true, 30);
+        monitorOutput.Init(monitorBus.ToWaveProvider());
+        monitorOutput.Play();
+        Log($"本地监听已开启：音效 → {monitorDevice.FriendlyName}");
+    }
+
+    public Task ScanEffectsAsync(string? folder)
+    {
+        effects = effectLibrary.Scan(folder);
+        Log($"音效库已加载：{effects.Count} 个（{effectLibrary.Folder}）");
+        RaiseChanged();
+        return Task.CompletedTask;
+    }
+
+    public void TriggerEffect(string name)
+    {
+        var effect = effectLibrary.Resolve(name);
+        if (effect is null)
+        {
+            Log($"音效「{name}」打不开，跳过");
+            return;
+        }
+        effectsBus?.Trigger(effect, 1.0);
+        monitorBus?.Trigger(effect, 1.0);
+    }
+
+    public void StopEffects()
+    {
+        effectsBus?.StopAll();
+        monitorBus?.StopAll();
+    }
+
     private void StartPartnerMonitor(MMDevice outputDevice)
     {
         try

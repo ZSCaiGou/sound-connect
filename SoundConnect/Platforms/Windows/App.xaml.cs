@@ -76,16 +76,30 @@ namespace SoundConnect.WinUI
                 else
                 {
                     await engine.StartAsync(
-                        new AudioStartOptions(music.ProcessId, microphone?.Id ?? string.Empty, output.Id)
+                        new AudioStartOptions(
+                            music.ProcessId,
+                            microphone?.Id ?? string.Empty,
+                            output.Id,
+                            string.Empty
+                        )
                     );
+                    await engine.ScanEffectsAsync(null);
+                    report.Add($"音效库：{engine.Effects.Count} 个");
                     for (var second = 1; second <= 8; second++)
                     {
                         await Task.Delay(1000);
+                        if (second == 4)
+                        {
+                            engine.TriggerEffect(SoundConnect.Services.EffectLibrary.TestToneName);
+                            report.Add("t=4s 触发内置测试音");
+                        }
                         var snapshot = engine.Snapshot;
                         report.Add(
                             $"t={second}s 音乐 {snapshot.MusicLevel:F4} / 麦克风 {snapshot.MicrophoneLevel:F4}"
                                 + $" / 总输出 {snapshot.OutputLevel:F4} / 峰值 {snapshot.OutputPeak:F3}"
                                 + $" / 欠载 音乐{snapshot.MusicUnderruns} 麦克风{snapshot.MicrophoneUnderruns}"
+                                + $" / 队友收到 {snapshot.SentLevel:F4} 峰值 {snapshot.SentPeak:F4}"
+                                + $" 削顶 {snapshot.SentClipSamples} / 音效 {snapshot.ActiveEffects} 个在播"
                         );
                     }
                     await engine.StopAsync();

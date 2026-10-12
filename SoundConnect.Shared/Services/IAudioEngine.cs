@@ -10,10 +10,13 @@ public sealed record AudioDeviceInfo(
 
 public sealed record AudioProcessInfo(int ProcessId, string Name, string State);
 
+public sealed record EffectInfo(string Name, string Path);
+
 public sealed record AudioStartOptions(
     int MusicProcessId,
     string MicrophoneDeviceId,
-    string OutputDeviceId
+    string OutputDeviceId,
+    string MonitorDeviceId
 );
 
 public sealed class AudioEngineSnapshot
@@ -31,8 +34,13 @@ public sealed class AudioEngineSnapshot
     public double SentLevel { get; init; }
     public double SentPeak { get; init; }
     public long SentClipSamples { get; init; }
+    public IReadOnlyList<EffectInfo> Effects { get; init; } = Array.Empty<EffectInfo>();
+    public string EffectFolder { get; init; } = string.Empty;
+    public int ActiveEffects { get; init; }
+    public bool IsMonitoring { get; init; }
     public double MusicGain { get; init; }
     public double MicrophoneGain { get; init; }
+    public double EffectsGain { get; init; }
     public IReadOnlyList<string> Log { get; init; } = Array.Empty<string>();
 }
 
@@ -57,6 +65,13 @@ public interface IAudioEngine
     Task RefreshDevicesAsync();
 
     Task<IReadOnlyList<AudioProcessInfo>> ListAudioProcessesAsync();
+
+    /// <summary>音效库：文件名去掉扩展名就是音效名。</summary>
+    Task ScanEffectsAsync(string? folder);
+
+    void TriggerEffect(string name);
+
+    void StopEffects();
 
     Task StartAsync(AudioStartOptions options);
 

@@ -22,6 +22,8 @@ public sealed class AudioEngineSnapshot
     public double MusicLevel { get; init; }
     public double MicrophoneLevel { get; init; }
     public double OutputLevel { get; init; }
+    public double OutputPeak { get; init; }
+    public bool IsClipping { get; init; }
     public double MusicGain { get; init; }
     public double MicrophoneGain { get; init; }
     public IReadOnlyList<string> Log { get; init; } = Array.Empty<string>();

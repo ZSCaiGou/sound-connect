@@ -31,17 +31,19 @@ public sealed class AudioEngine : IAudioEngine
     private MixingSampleProvider? mixer;
     private VolumeSampleProvider? musicVolume;
     private VolumeSampleProvider? microphoneVolume;
-    private VolumeSampleProvider? masterVolume;
     private BufferedWaveProvider? masterBuffer;
     private WasapiOut? masterOutput;
     private CancellationTokenSource? pumpCancellation;
     private Thread? pumpThread;
 
-    private double musicGain = 0.7;
+    private double musicGain = 1.0;
     private double microphoneGain = 1.0;
     private double musicLevel;
     private double microphoneLevel;
     private double outputLevel;
+    private double outputPeak;
+    private bool clipping;
+    private bool warnedClipping;
     private DateTime lastMeterAt = DateTime.MinValue;
 
     public event Action? Changed;
@@ -63,6 +65,8 @@ public sealed class AudioEngine : IAudioEngine
         MusicLevel = musicLevel,
         MicrophoneLevel = microphoneLevel,
         OutputLevel = outputLevel,
+        OutputPeak = outputPeak,
+        IsClipping = clipping,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
         Log = log.ToArray()
@@ -193,7 +197,6 @@ public sealed class AudioEngine : IAudioEngine
         }
 
         mixer = new MixingSampleProvider(sources) { ReadFully = true };
-        masterVolume = new VolumeSampleProvider(mixer) { Volume = (float)CableCompensation };
         masterBuffer = CreateBuffer(mixFormat);
         masterOutput = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, 50);
         masterOutput.Init(masterBuffer);
@@ -237,13 +240,15 @@ public sealed class AudioEngine : IAudioEngine
         mixer = null;
         musicVolume = null;
         microphoneVolume = null;
-        masterVolume = null;
         musicBuffer = null;
         microphoneBuffer = null;
 
         musicLevel = 0;
         microphoneLevel = 0;
         outputLevel = 0;
+        outputPeak = 0;
+        clipping = false;
+        warnedClipping = false;
         if (IsRunning)
         {
             Log("通路已停止");
@@ -255,7 +260,7 @@ public sealed class AudioEngine : IAudioEngine
 
     public void SetGain(string channel, double volume)
     {
-        var clamped = Math.Clamp(volume, 0, 2);
+        var clamped = Math.Clamp(volume, 0, 10); // 上限 10x，也就是 +20dB
         if (channel == "music")
         {
             musicGain = clamped;
@@ -275,20 +280,22 @@ public sealed class AudioEngine : IAudioEngine
 
     private void OnMusicData(byte[] chunk)
     {
-        musicLevel = Level(chunk, musicBuffer?.WaveFormat);
+        musicLevel = Level(chunk, musicBuffer?.WaveFormat) * musicGain;
         musicBuffer?.AddSamples(chunk, 0, chunk.Length);
     }
 
     private void OnMicrophoneData(object? sender, WaveInEventArgs eventArgs)
     {
-        microphoneLevel = Level(eventArgs.Buffer, microphoneBuffer?.WaveFormat, eventArgs.BytesRecorded);
+        microphoneLevel =
+            Level(eventArgs.Buffer, microphoneBuffer?.WaveFormat, eventArgs.BytesRecorded)
+            * microphoneGain;
         microphoneBuffer?.AddSamples(eventArgs.Buffer, 0, eventArgs.BytesRecorded);
     }
 
     private void Pump()
     {
         var cancel = pumpCancellation;
-        var block = masterVolume;
+        var block = mixer;
         var target = masterBuffer;
         if (cancel is null || block is null || target is null) return;
 
@@ -296,6 +303,7 @@ public sealed class AudioEngine : IAudioEngine
         var frames = format.SampleRate * BlockMilliseconds / 1000;
         var samples = new float[frames * format.Channels];
         var bytes = new byte[samples.Length * 4];
+        var peakSinceReport = 0.0;
 
         while (!cancel.IsCancellationRequested)
         {
@@ -312,13 +320,29 @@ public sealed class AudioEngine : IAudioEngine
                 continue;
             }
 
+            // 这里量到的就是"队友实际听到的电平"：虚拟线自带的 +30dB 正好抵消下面这次衰减
             outputLevel = Level(samples, read);
+            for (var index = 0; index < read; index++)
+            {
+                var magnitude = Math.Abs(samples[index]);
+                if (magnitude > peakSinceReport) peakSinceReport = magnitude;
+                samples[index] *= (float)CableCompensation;
+            }
+
             Buffer.BlockCopy(samples, 0, bytes, 0, read * 4);
             target.AddSamples(bytes, 0, read * 4);
 
             if ((DateTime.UtcNow - lastMeterAt).TotalMilliseconds >= MeterIntervalMs)
             {
                 lastMeterAt = DateTime.UtcNow;
+                outputPeak = peakSinceReport;
+                clipping = peakSinceReport >= 0.99;
+                if (clipping && !warnedClipping)
+                {
+                    warnedClipping = true;
+                    Log("输出削顶了：把音乐或麦克风音量往下调一点");
+                }
+                peakSinceReport = 0;
                 RaiseChanged();
             }
         }

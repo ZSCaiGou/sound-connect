@@ -72,22 +72,30 @@
             </div>
         }
 
+        @if (snapshot.IsClipping)
+        {
+            <div class="alert alert-danger py-2 mb-0">
+                输出削顶了（峰值 @ToDb(snapshot.OutputPeak)），把音乐或麦克风音量往下调一点。
+            </div>
+        }
+
         <hr />
 
         <div class="row g-3">
             <div class="col-md-6">
-                <label class="form-label">音乐音量 @musicGain.ToString("F2")</label>
-                <input type="range" class="form-range" min="0" max="1.5" step="0.05"
-                       value="@musicGain" @onchange="OnMusicGainChanged" />
+                <label class="form-label">音乐音量 @musicGainDb.ToString("F0") dB</label>
+                <input type="range" class="form-range" min="-20" max="20" step="1"
+                       value="@musicGainDb" @onchange="OnMusicGainChanged" />
             </div>
             <div class="col-md-6">
-                <label class="form-label">麦克风音量 @microphoneGain.ToString("F2")</label>
-                <input type="range" class="form-range" min="0" max="1.5" step="0.05"
-                       value="@microphoneGain" @onchange="OnMicrophoneGainChanged" />
+                <label class="form-label">麦克风音量 @microphoneGainDb.ToString("F0") dB</label>
+                <input type="range" class="form-range" min="-20" max="20" step="1"
+                       value="@microphoneGainDb" @onchange="OnMicrophoneGainChanged" />
             </div>
         </div>
         <div class="form-text">
-            两个音量都带上了 -30dB 的虚拟线补偿，你调的是相对比例，直接调就行。
+            0 dB 表示原样送出（虚拟线的 +30dB 已经补偿掉了），可以往上加到 +20dB。
+            电平表显示的就是队友实际听到的响度。
         </div>
     </div>
 </div>
@@ -107,8 +115,8 @@
     private int musicProcessId;
     private string microphoneId = string.Empty;
     private string outputId = string.Empty;
-    private double musicGain = 0.7;
-    private double microphoneGain = 1;
+    private double musicGainDb;
+    private double microphoneGainDb;
     private bool busy;
     private string message = string.Empty;
 
@@ -135,8 +143,8 @@
         _ = InvokeAsync(() =>
         {
             snapshot = Engine.Snapshot;
-            musicGain = snapshot.MusicGain;
-            microphoneGain = snapshot.MicrophoneGain;
+            musicGainDb = ToGainDb(snapshot.MusicGain);
+            microphoneGainDb = ToGainDb(snapshot.MicrophoneGain);
             StateHasChanged();
         });
     }
@@ -217,20 +225,25 @@
 
     private void OnMusicGainChanged(ChangeEventArgs args)
     {
-        if (double.TryParse(args.Value?.ToString(), out var value))
+        if (double.TryParse(args.Value?.ToString(), out var decibels))
         {
-            musicGain = value;
-            Engine.SetGain("music", value);
+            musicGainDb = decibels;
+            Engine.SetGain("music", Math.Pow(10, decibels / 20));
         }
     }
 
     private void OnMicrophoneGainChanged(ChangeEventArgs args)
     {
-        if (double.TryParse(args.Value?.ToString(), out var value))
+        if (double.TryParse(args.Value?.ToString(), out var decibels))
         {
-            microphoneGain = value;
-            Engine.SetGain("mic", value);
+            microphoneGainDb = decibels;
+            Engine.SetGain("mic", Math.Pow(10, decibels / 20));
         }
+    }
+
+    private static double ToGainDb(double linear)
+    {
+        return linear <= 0.0001 ? -20 : Math.Clamp(20 * Math.Log10(linear), -20, 20);
     }
 
     private static int Percent(double value)

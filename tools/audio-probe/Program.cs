@@ -25,6 +25,7 @@ internal static class Program
             {
                 "list" => ListDevices(),
                 "probe" => Probe(args[1..]),
+                "record" => Record(args[1..]),
                 _ => Usage()
             };
         }
@@ -40,7 +41,80 @@ internal static class Program
         Console.WriteLine("用法：");
         Console.WriteLine("  audio-probe list");
         Console.WriteLine("  audio-probe probe --render <名称片段或序号> --capture <名称片段或序号> [--ms 1500]");
+        Console.WriteLine("  audio-probe record --capture <名称片段或序号> [--ms 5000]");
         return 1;
+    }
+
+    /// <summary>
+    /// 只录不播：从指定输入设备录一段，报告电平和主频。
+    /// 用来在别的东西往虚拟线里写声音时，从线的另一端确认信号真的到了。
+    /// </summary>
+    private static int Record(string[] args)
+    {
+        var options = ParseOptions(args);
+        var ms = int.TryParse(options.GetValueOrDefault("ms"), out var parsed) ? parsed : 5000;
+
+        using var enumerator = new MMDeviceEnumerator();
+        var captures = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+        var device = Resolve(captures, options.GetValueOrDefault("capture"), "输入");
+        Console.WriteLine($"录制端：{device.FriendlyName}（驱动：{device.DeviceFriendlyName}）");
+
+        WaveFormat format;
+        using var recorded = new MemoryStream();
+        var gate = new object();
+        using (var capture = new WasapiCapture(device, true, 20))
+        {
+            format = capture.WaveFormat;
+            capture.DataAvailable += (_, eventArgs) =>
+            {
+                lock (gate)
+                {
+                    recorded.Write(eventArgs.Buffer, 0, eventArgs.BytesRecorded);
+                }
+            };
+            capture.StartRecording();
+            Thread.Sleep(ms);
+            capture.StopRecording();
+        }
+
+        var samples = ToMono(recorded.ToArray(), format);
+        double sum = 0;
+        var peak = 0.0;
+        foreach (var sample in samples)
+        {
+            sum += sample * sample;
+            if (Math.Abs(sample) > peak) peak = Math.Abs(sample);
+        }
+        var rms = Math.Sqrt(sum / Math.Max(1, samples.Length));
+
+        var window = Math.Min(samples.Length, format.SampleRate);
+        var bestFrequency = 0.0;
+        var bestEnergy = 0.0;
+        for (var frequency = 60.0; frequency <= 6000; frequency += 20)
+        {
+            var energy = Goertzel(samples, 0, window, format.SampleRate, frequency);
+            if (energy > bestEnergy)
+            {
+                bestEnergy = energy;
+                bestFrequency = frequency;
+            }
+        }
+
+        var durationMs = samples.Length * 1000.0 / format.SampleRate;
+        Console.WriteLine(
+            $"格式 {format.SampleRate}Hz/{format.Channels}ch/{format.BitsPerSample}bit "
+            + $"{format.Encoding}，时长 {durationMs:F0}ms"
+        );
+        Console.WriteLine(
+            $"RMS {rms:F4}，峰值 {peak:F4}，主频约 {bestFrequency:F0}Hz（能量 {bestEnergy:F4}）"
+        );
+        if (rms <= 0.002)
+        {
+            Console.WriteLine("结论：这条线上没有信号。");
+            return 3;
+        }
+        Console.WriteLine("结论：线上有信号。");
+        return 0;
     }
 
     private static int ListDevices()
@@ -75,6 +149,9 @@ internal static class Program
     {
         var options = ParseOptions(args);
         var toneMs = int.TryParse(options.GetValueOrDefault("ms"), out var parsed) ? parsed : 1500;
+        var gain = double.TryParse(options.GetValueOrDefault("gain"), out var parsedGain)
+            ? parsedGain
+            : 0.25;
 
         using var enumerator = new MMDeviceEnumerator();
         var renderDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
@@ -100,22 +177,40 @@ internal static class Program
             };
             capture.StartRecording();
             Thread.Sleep(LeadMs);
-            Console.WriteLine($"开始播放 {toneMs}ms 的 1kHz 正弦…");
-            PlayTone(renderDevice, toneMs);
+            Console.WriteLine($"开始播放 {toneMs}ms 的 1kHz 正弦（幅度 {gain:F2}）…");
+            PlayTone(renderDevice, toneMs, gain);
             Thread.Sleep(TailMs);
             capture.StopRecording();
         }
 
         var samples = ToMono(recorded.ToArray(), captureFormat);
+        var samplePeak = 0.0;
+        double squareSum = 0;
+        foreach (var sample in samples)
+        {
+            var magnitude = Math.Abs(sample);
+            if (magnitude > samplePeak) samplePeak = magnitude;
+            squareSum += sample * sample;
+        }
+        var sampleRms = Math.Sqrt(squareSum / Math.Max(1, samples.Length));
         var durationMs = samples.Length * 1000.0 / captureFormat.SampleRate;
-        Console.WriteLine($"录到 {durationMs:F0}ms，采样率 {captureFormat.SampleRate}Hz/{captureFormat.Channels}ch");
+        Console.WriteLine(
+            $"录到 {durationMs:F0}ms，采样率 {captureFormat.SampleRate}Hz/{captureFormat.Channels}ch/{captureFormat.BitsPerSample}bit"
+        );
+        Console.WriteLine(
+            $"送出幅度 {gain:F2}，录回峰值 {samplePeak:F3}、RMS {sampleRms:F3}，"
+            + $"这条线的增益 ≈ {samplePeak / gain:F2}x（{20 * Math.Log10(Math.Max(samplePeak / gain, 1e-6)):F1}dB）"
+        );
 
         var window = Math.Max(1, captureFormat.SampleRate / 50);
         var baselineEnd = (int)(captureFormat.SampleRate * (LeadMs - 100) / 1000.0);
         var baseline = 0.0;
         for (var start = 0; start + window <= baselineEnd; start += window)
         {
-            baseline = Math.Max(baseline, Goertzel(samples, start, window, captureFormat.SampleRate));
+            baseline = Math.Max(
+                baseline,
+                Goertzel(samples, start, window, captureFormat.SampleRate, ToneFrequency)
+            );
         }
 
         var threshold = Math.Max(baseline * 5, 0.004);
@@ -124,7 +219,7 @@ internal static class Program
         var searchFrom = (int)(captureFormat.SampleRate * (LeadMs - 100) / 1000.0);
         for (var start = searchFrom; start + window <= samples.Length; start += window)
         {
-            var amplitude = Goertzel(samples, start, window, captureFormat.SampleRate);
+            var amplitude = Goertzel(samples, start, window, captureFormat.SampleRate, ToneFrequency);
             peak = Math.Max(peak, amplitude);
             if (detectAt < 0 && amplitude > threshold)
             {
@@ -144,14 +239,14 @@ internal static class Program
         return 0;
     }
 
-    private static void PlayTone(MMDevice renderDevice, int toneMs)
+    private static void PlayTone(MMDevice renderDevice, int toneMs, double gain)
     {
         var format = renderDevice.AudioClient.MixFormat;
         using var output = new WasapiOut(renderDevice, AudioClientShareMode.Shared, true, 50);
         var generator = new SignalGenerator(format.SampleRate, format.Channels)
         {
             Frequency = ToneFrequency,
-            Gain = 0.25,
+            Gain = gain,
             Type = SignalGeneratorType.Sin
         };
         output.Init(generator.ToWaveProvider());
@@ -192,9 +287,15 @@ internal static class Program
                ?? throw new ArgumentException($"找不到匹配「{selector}」的{what}设备");
     }
 
-    private static double Goertzel(float[] samples, int start, int length, int sampleRate)
+    private static double Goertzel(
+        float[] samples,
+        int start,
+        int length,
+        int sampleRate,
+        double frequency
+    )
     {
-        var coefficient = 2 * Math.Cos(2 * Math.PI * ToneFrequency / sampleRate);
+        var coefficient = 2 * Math.Cos(2 * Math.PI * frequency / sampleRate);
         double s1 = 0;
         double s2 = 0;
         for (var index = 0; index < length && start + index < samples.Length; index++)

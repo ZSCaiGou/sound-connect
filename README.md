@@ -40,6 +40,10 @@ dotnet run --project SoundConnect     # 运行桌面应用
 # 虚拟线自检
 dotnet run --project tools/audio-probe -- list
 dotnet run --project tools/audio-probe -- probe --render "名称" --capture "名称"
+
+# 把某个进程的声音抓出来送进虚拟线（QQ 音乐正在放歌时可以用）
+dotnet run --project tools/process-capture -- list
+dotnet run --project tools/process-capture -- capture --process QQMusic --render 0
 ```
 
 ## 目录结构
@@ -48,6 +52,7 @@ dotnet run --project tools/audio-probe -- probe --render "名称" --capture "名
 SoundConnect/            MAUI Blazor Hybrid 宿主（Windows 桌面）
 SoundConnect.Shared/     Blazor 界面（Razor 组件库）
 tools/audio-probe/       虚拟线探针：判断一对设备是不是回环，并量出往返延迟
+tools/process-capture/   进程回环采集器原型：抓指定进程的声音渲染进虚拟线
 docs/design.md           设计方案：数据通路、设备选型、验证清单
 ```
 

@@ -32,6 +32,13 @@
     <div class="alert">@message</div>
 }
 
+@if (loading)
+{
+    <div class="chips" style="margin-bottom:16px">
+        <span class="chip">正在读取设备与程序…</span>
+    </div>
+}
+
 <div class="card">
     <div class="card-body">
         <h2>来源与输出</h2>
@@ -192,6 +199,7 @@
     private double microphoneGainDb;
     private double effectsGainDb = -1;
     private bool busy;
+    private bool loading = true;
     private string message = string.Empty;
 
     private MeterRow[] Meters =>
@@ -240,8 +248,17 @@
 
     private async Task RefreshAsync()
     {
-        await Engine.RefreshDevicesAsync();
-        processes = await Engine.ListAudioProcessesAsync();
+        loading = true;
+        StateHasChanged();
+        try
+        {
+            await Engine.RefreshDevicesAsync();
+            processes = await Engine.ListAudioProcessesAsync();
+        }
+        finally
+        {
+            loading = false;
+        }
 
         outputId = PickOutputDevice();
         if (string.IsNullOrEmpty(microphoneId))

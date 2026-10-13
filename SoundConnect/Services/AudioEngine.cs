@@ -156,16 +156,78 @@ public sealed class AudioEngine : IAudioEngine
         Log = log.ToArray()
     };
 
-    public Task RefreshDevicesAsync()
+    /// <summary>
+    /// 枚举设备要读属性存储，枚举音频会话是 COM 调用，都不是瞬间的事——
+    /// 放到后台线程做，界面才不会一开始就卡住。注意枚举器要在各自线程里新建，
+    /// WASAPI 的 COM 对象跨公寓用会直接报 E_NOINTERFACE。
+    /// </summary>
+    public async Task RefreshDevicesAsync()
     {
-        RenderDevices = ReadDevices(DataFlow.Render, "输出");
-        CaptureDevices = ReadDevices(DataFlow.Capture, "输入");
+        var started = Environment.TickCount64;
+        var (render, capture) = await Task.Run(() => ReadAllDevices(Log));
+        RenderDevices = render;
+        CaptureDevices = capture;
+        Log($"设备枚举用了 {Environment.TickCount64 - started}ms（{render.Count} 输出 / {capture.Count} 输入）");
         RaiseChanged();
-        return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<AudioProcessInfo>> ListAudioProcessesAsync()
+    private static (List<AudioDeviceInfo> Render, List<AudioDeviceInfo> Capture) ReadAllDevices(
+        Action<string> log
+    )
     {
+        var total = Environment.TickCount64;
+        using var enumerator = new MMDeviceEnumerator();
+        var started = Environment.TickCount64;
+        var render = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
+        var capture = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+        log($"计时：枚举端点 {Environment.TickCount64 - started}ms（{render.Count} + {capture.Count}）");
+        var readStarted = Environment.TickCount64;
+        var renderInfo = ToDeviceInfoList(render, "输出");
+        var captureInfo = ToDeviceInfoList(capture, "输入");
+        log($"计时：读设备名 {Environment.TickCount64 - readStarted}ms，合计 {Environment.TickCount64 - total}ms");
+        return (
+            renderInfo,
+            captureInfo
+        );
+    }
+
+    /// <summary>
+    /// 读设备名是 COM 调用，实测每个要 100-300ms（往音频服务跑一趟），串行读十几个设备就是好几秒。
+    /// 这里并行读，整体降到最慢那一个的量级。驱动名不在这里读——它只在开始共享时对选中的设备读一次。
+    /// </summary>
+    private static List<AudioDeviceInfo> ToDeviceInfoList(List<MMDevice> devices, string kind)
+    {
+        var result = new AudioDeviceInfo[devices.Count];
+        Parallel.For(
+            0,
+            devices.Count,
+            index =>
+            {
+                var device = devices[index];
+                var name = device.FriendlyName;
+                result[index] = new AudioDeviceInfo(
+                    device.ID,
+                    name,
+                    string.Empty,
+                    LooksVirtual(name),
+                    kind
+                );
+            }
+        );
+        return result.ToList();
+    }
+
+    public async Task<IReadOnlyList<AudioProcessInfo>> ListAudioProcessesAsync()
+    {
+        var started = Environment.TickCount64;
+        var processes = await Task.Run(ListAudioProcesses);
+        Log($"音频会话枚举用了 {Environment.TickCount64 - started}ms（{processes.Count} 个程序）");
+        return processes;
+    }
+
+    private static IReadOnlyList<AudioProcessInfo> ListAudioProcesses()
+    {
+        using var enumerator = new MMDeviceEnumerator();
         var found = new Dictionary<int, AudioProcessInfo>();
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         {
@@ -195,16 +257,14 @@ public sealed class AudioEngine : IAudioEngine
             }
             catch (Exception error)
             {
-                Log($"枚举 {device.FriendlyName} 的会话失败：{error.Message}");
+                Console.WriteLine($"枚举 {device.FriendlyName} 的会话失败：{error.Message}");
             }
         }
 
-        return Task.FromResult<IReadOnlyList<AudioProcessInfo>>(
-            found
-                .Values.OrderByDescending(item => item.State == "正在发声")
-                .ThenBy(item => item.Name)
-                .ToList()
-        );
+        return found
+            .Values.OrderByDescending(item => item.State == "正在发声")
+            .ThenBy(item => item.Name)
+            .ToList();
     }
 
     public async Task StartAsync(AudioStartOptions options)
@@ -709,7 +769,7 @@ public sealed class AudioEngine : IAudioEngine
             : new WaveFormat(deviceFormat.SampleRate, deviceFormat.BitsPerSample, deviceFormat.Channels);
     }
 
-    private List<AudioDeviceInfo> ReadDevices(DataFlow flow, string kind)
+    private static List<AudioDeviceInfo> ReadDevices(MMDeviceEnumerator enumerator, DataFlow flow, string kind)
     {
         var result = new List<AudioDeviceInfo>();
         foreach (var device in enumerator.EnumerateAudioEndPoints(flow, DeviceState.Active))

@@ -12,7 +12,7 @@
     </div>
     <div class="head-actions">
         <span class="status-pill @(snapshot.IsRunning ? "live" : "")">
-            <span class="dot"></span>@(snapshot.IsRunning ? "正在共享" : "未开启")
+            <span class="dot"></span>@StatusText
         </span>
         @if (snapshot.IsRunning)
         {
@@ -132,6 +132,12 @@
                 断续 @(snapshot.MusicUnderruns + snapshot.MicrophoneUnderruns) 次/秒
             </span>
         </div>
+        @if (snapshot.IsRunning && snapshot.MusicLevel < 0.001)
+        {
+            <div class="form-text">
+                选中的程序现在没有声音。确认它正在播放，或者点上面的「刷新设备与程序」重新选一个。
+            </div>
+        }
         <div class="form-text">
             削顶为"无"、断续为 0 就是干净的；峰值贴着 0dB 时把音量往下调一点。
         </div>
@@ -194,6 +200,19 @@
         new("麦克风", snapshot.MicrophoneLevel),
         new("送出去", snapshot.OutputLevel)
     ];
+
+    /// <summary>状态胶囊上顺带显示已经共享了多久。</summary>
+    private string StatusText
+    {
+        get
+        {
+            if (!snapshot.IsRunning) return "未开启";
+            var elapsed = TimeSpan.FromSeconds(snapshot.ElapsedSeconds);
+            return elapsed.TotalHours >= 1
+                ? $"正在共享 · {elapsed:hh\\:mm\\:ss}"
+                : $"正在共享 · {elapsed:mm\\:ss}";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {

@@ -38,6 +38,8 @@ public sealed class AudioEngineSnapshot
     public string EffectFolder { get; init; } = string.Empty;
     public int ActiveEffects { get; init; }
     public bool IsMonitoring { get; init; }
+    /// <summary>这次共享已经持续了多久（秒），没在共享时为 0。</summary>
+    public double ElapsedSeconds { get; init; }
     public double MusicGain { get; init; }
     public double MicrophoneGain { get; init; }
     public double EffectsGain { get; init; }
@@ -80,6 +82,9 @@ public interface IAudioEngine
     void StopEffects();
 
     Task StartAsync(AudioStartOptions options);
+
+    /// <summary>用上次的配置开始共享；从没配过就自动挑一套能用的（托盘菜单会用到）。</summary>
+    Task StartAsync();
 
     Task StopAsync();
 

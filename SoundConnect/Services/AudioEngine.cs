@@ -93,6 +93,8 @@ public sealed class AudioEngine : IAudioEngine
     private bool clipping;
     private bool warnedClipping;
     private DateTime lastMeterAt = DateTime.MinValue;
+    private AudioStartOptions? lastOptions;
+    private DateTime startedAt;
     private long musicUnderruns;
     private long microphoneUnderruns;
     private long lastMusicStarved;
@@ -147,6 +149,7 @@ public sealed class AudioEngine : IAudioEngine
         EffectFolder = effectLibrary.Folder,
         ActiveEffects = ActiveEffects,
         IsMonitoring = IsMonitoring,
+        ElapsedSeconds = IsRunning ? (DateTime.UtcNow - startedAt).TotalSeconds : 0,
         MusicGain = musicGain,
         MicrophoneGain = microphoneGain,
         EffectsGain = effectsGain,
@@ -207,6 +210,7 @@ public sealed class AudioEngine : IAudioEngine
     public async Task StartAsync(AudioStartOptions options)
     {
         await StopAsync();
+        lastOptions = options;
 
         var outputDevice =
             FindDevice(DataFlow.Render, options.OutputDeviceId)
@@ -295,12 +299,51 @@ public sealed class AudioEngine : IAudioEngine
         StartMonitorOutput(options.MonitorDeviceId);
 
         IsRunning = true;
+        startedAt = DateTime.UtcNow;
         Log(
             $"通路已建立：混音 → {outputDevice.FriendlyName}"
                 + $"（线路增益补偿 {20 * Math.Log10(cableCompensation):F1}dB，"
                 + $"送出规格 {deviceFormat.SampleRate}Hz/{deviceFormat.Channels}ch）"
         );
         RaiseChanged();
+    }
+
+    public async Task StartAsync()
+    {
+        await StartAsync(lastOptions ?? await BuildDefaultOptionsAsync());
+    }
+
+    /// <summary>没配过时的兜底：优先 VB-CABLE，麦克风取第一个真实设备，音乐取正在发声的那个程序。</summary>
+    private async Task<AudioStartOptions> BuildDefaultOptionsAsync()
+    {
+        if (RenderDevices.Count == 0 || CaptureDevices.Count == 0)
+        {
+            await RefreshDevicesAsync();
+        }
+
+        var output =
+            RenderDevices.FirstOrDefault(device =>
+                device.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase)
+            )
+            ?? RenderDevices.FirstOrDefault(device =>
+                device.Name.Contains("Steam Streaming Microphone", StringComparison.OrdinalIgnoreCase)
+            )
+            ?? RenderDevices.FirstOrDefault(device => device.IsVirtual);
+        var microphone = CaptureDevices.FirstOrDefault(device => !device.IsVirtual);
+        var processes = await ListAudioProcessesAsync();
+        var music = processes.FirstOrDefault(item => item.State == "正在发声");
+
+        if (output is null)
+        {
+            throw new InvalidOperationException("没找到可用的虚拟线，先在界面里选一条");
+        }
+
+        return new AudioStartOptions(
+            music?.ProcessId ?? 0,
+            microphone?.Id ?? string.Empty,
+            output.Id,
+            string.Empty
+        );
     }
 
     public Task StopAsync()
